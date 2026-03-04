@@ -134,8 +134,55 @@ This function handles errors through redirects:
 - Missing team or user: Redirects to sign-up page
 - Stripe API errors: Will throw and should be caught by error boundaries
 
+## checkoutAction
+
+A pre-built server action that wraps `createCheckoutSession()` with team middleware protection. This is the recommended way to use checkout in forms.
+
+### Function Signature
+
+```typescript
+export const checkoutAction: (formData: FormData) => Promise<never>
+```
+
+Located in `/lib/payments/actions.ts:7-10`
+
+### Parameters
+
+<ParamField path="formData" type="FormData" required>
+  Form data containing the `priceId` field
+</ParamField>
+
+### Usage Example
+
+```typescript
+// app/pricing/page.tsx
+import { checkoutAction } from '@/lib/payments/actions';
+
+export default function PricingPage() {
+  return (
+    <form action={checkoutAction}>
+      <input type="hidden" name="priceId" value="price_1234567890" />
+      <button type="submit">Subscribe Now</button>
+    </form>
+  );
+}
+```
+
+### How It Works
+
+The `checkoutAction` uses the `withTeam` middleware wrapper, which:
+1. Automatically retrieves the current user's team
+2. Validates team membership
+3. Passes the team to `createCheckoutSession()`
+4. Handles errors if user is not authenticated or not part of a team
+
+<Note>
+  This action is protected by the `withTeam` middleware, ensuring only authenticated users with team membership can initiate checkout.
+</Note>
+
 ### Related Functions
 
 - `createCustomerPortalSession()` - Manage existing subscriptions
 - `handleSubscriptionChange()` - Process webhook events
 - `getStripePrices()` - Fetch available pricing plans
+- `customerPortalAction()` - Server action for customer portal access

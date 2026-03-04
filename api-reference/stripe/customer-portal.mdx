@@ -225,8 +225,60 @@ The portal configuration is created once and reused for all subsequent sessions.
 - **Proration**: Creates prorations when customers upgrade/downgrade
 - **Cancellation**: At period end, preventing immediate service disruption
 
+## customerPortalAction
+
+A pre-built server action that wraps `createCustomerPortalSession()` with team middleware protection. This is the recommended way to access the customer portal in forms.
+
+### Function Signature
+
+```typescript
+export const customerPortalAction: (formData: FormData) => Promise<never>
+```
+
+Located in `/lib/payments/actions.ts:12-15`
+
+### Parameters
+
+<ParamField path="formData" type="FormData">
+  Form data (not used, but required by the server action signature)
+</ParamField>
+
+### Usage Example
+
+```typescript
+// app/dashboard/billing/page.tsx
+import { customerPortalAction } from '@/lib/payments/actions';
+
+export default function BillingPage() {
+  return (
+    <div>
+      <h1>Manage Your Subscription</h1>
+      <form action={customerPortalAction}>
+        <button type="submit">
+          Open Customer Portal
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+### How It Works
+
+The `customerPortalAction` uses the `withTeam` middleware wrapper, which:
+1. Automatically retrieves the current user's team
+2. Validates team membership and subscription status
+3. Creates a customer portal session
+4. Redirects to the Stripe Customer Portal
+5. Handles errors if user is not authenticated or not part of a team
+
+<Note>
+  This action is protected by the `withTeam` middleware, ensuring only authenticated users with team membership can access the customer portal.
+</Note>
+
 ### Related Functions
 
 - `createCheckoutSession()` - Create new subscriptions
 - `handleSubscriptionChange()` - Process subscription updates from webhooks
 - `getStripeProducts()` - Fetch available products
+- `checkoutAction()` - Server action for initiating checkout
