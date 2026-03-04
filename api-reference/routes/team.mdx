@@ -1,0 +1,175 @@
+---
+title: 'Team API'
+description: 'Retrieve team information for the authenticated user including team members and subscription details'
+---
+
+## GET /api/team
+
+Retrieves the team data for the currently authenticated user, including team members, subscription status, and billing information.
+
+### Authentication
+
+This endpoint requires a valid session cookie. The user must be authenticated and a member of a team.
+
+### Request
+
+No request body or query parameters required.
+
+```bash cURL
+curl -X GET https://your-domain.com/api/team \
+  -H "Cookie: session=your-session-token"
+```
+
+```javascript fetch
+const response = await fetch('/api/team', {
+  method: 'GET',
+  credentials: 'include'
+});
+
+const team = await response.json();
+```
+
+### Response
+
+Returns the team object with nested team members data, or `null` if the user is not authenticated or not part of a team.
+
+<ResponseField name="id" type="number" required>
+  The unique identifier for the team
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  The name of the team
+</ResponseField>
+
+<ResponseField name="createdAt" type="string" required>
+  ISO 8601 timestamp of when the team was created
+</ResponseField>
+
+<ResponseField name="updatedAt" type="string" required>
+  ISO 8601 timestamp of when the team was last updated
+</ResponseField>
+
+<ResponseField name="stripeCustomerId" type="string | null">
+  Stripe customer ID for billing
+</ResponseField>
+
+<ResponseField name="stripeSubscriptionId" type="string | null">
+  Stripe subscription ID for the active subscription
+</ResponseField>
+
+<ResponseField name="stripeProductId" type="string | null">
+  Stripe product ID for the subscribed plan
+</ResponseField>
+
+<ResponseField name="planName" type="string | null">
+  Human-readable name of the subscription plan
+</ResponseField>
+
+<ResponseField name="subscriptionStatus" type="string | null">
+  Current status of the subscription (e.g., "active", "canceled", "past_due")
+</ResponseField>
+
+<ResponseField name="teamMembers" type="array" required>
+  Array of team member objects with user details
+  
+  <Expandable title="Team Member Object">
+    <ResponseField name="id" type="number" required>
+      The unique identifier for the team member record
+    </ResponseField>
+    
+    <ResponseField name="userId" type="number" required>
+      The user ID of the team member
+    </ResponseField>
+    
+    <ResponseField name="teamId" type="number" required>
+      The team ID this member belongs to
+    </ResponseField>
+    
+    <ResponseField name="role" type="string" required>
+      The role of the team member (e.g., "owner", "member", "admin")
+    </ResponseField>
+    
+    <ResponseField name="joinedAt" type="string" required>
+      ISO 8601 timestamp of when the member joined the team
+    </ResponseField>
+    
+    <ResponseField name="user" type="object" required>
+      User details for the team member
+      
+      <Expandable title="User Object">
+        <ResponseField name="id" type="number" required>
+          The user's unique identifier
+        </ResponseField>
+        
+        <ResponseField name="name" type="string | null">
+          The user's display name
+        </ResponseField>
+        
+        <ResponseField name="email" type="string" required>
+          The user's email address
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Response Examples
+
+<ResponseExample>
+```json Success Response
+{
+  "id": 1,
+  "name": "Acme Corporation",
+  "createdAt": "2024-01-15T10:30:00.000Z",
+  "updatedAt": "2024-03-01T14:20:00.000Z",
+  "stripeCustomerId": "cus_ABC123XYZ",
+  "stripeSubscriptionId": "sub_DEF456UVW",
+  "stripeProductId": "prod_GHI789RST",
+  "planName": "Pro",
+  "subscriptionStatus": "active",
+  "teamMembers": [
+    {
+      "id": 1,
+      "userId": 5,
+      "teamId": 1,
+      "role": "owner",
+      "joinedAt": "2024-01-15T10:30:00.000Z",
+      "user": {
+        "id": 5,
+        "name": "John Doe",
+        "email": "john@example.com"
+      }
+    },
+    {
+      "id": 2,
+      "userId": 7,
+      "teamId": 1,
+      "role": "member",
+      "joinedAt": "2024-02-10T09:15:00.000Z",
+      "user": {
+        "id": 7,
+        "name": "Jane Smith",
+        "email": "jane@example.com"
+      }
+    }
+  ]
+}
+```
+
+```json Not Authenticated
+null
+```
+
+```json No Team Membership
+null
+```
+</ResponseExample>
+
+### Error Handling
+
+The endpoint returns `null` in the following cases:
+- User is not authenticated (no valid session cookie)
+- User session has expired
+- User is not a member of any team
+
+No explicit error responses are returned; authentication failures result in a `null` response.

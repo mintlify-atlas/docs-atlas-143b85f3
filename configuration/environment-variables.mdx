@@ -1,0 +1,200 @@
+---
+title: Environment Variables
+description: Configure your Next.js SaaS Starter application with the required environment variables
+---
+
+The Next.js SaaS Starter requires several environment variables to be configured for proper operation. These variables control database connectivity, payment processing, authentication, and application URLs.
+
+## Setup Methods
+
+You can configure environment variables in two ways:
+
+1. **Automated Setup** (Recommended): Run the interactive setup script
+2. **Manual Setup**: Create and configure the `.env` file yourself
+
+### Automated Setup
+
+The easiest way to configure your environment is to use the automated setup script:
+
+```bash
+pnpm db:setup
+```
+
+This interactive script will:
+- Check for Stripe CLI installation and authentication
+- Set up your PostgreSQL database (local or remote)
+- Retrieve your Stripe API keys
+- Create a webhook secret automatically
+- Generate a secure `AUTH_SECRET`
+- Write all variables to `.env`
+
+<Note>
+  The setup script requires the Stripe CLI to be installed. If not found, it will provide installation instructions.
+</Note>
+
+### Manual Setup
+
+If you prefer to configure environment variables manually, create a `.env` file in the root of your project with the following variables:
+
+## Required Environment Variables
+
+<ParamField path="POSTGRES_URL" type="string" required>
+  PostgreSQL database connection string
+  
+  **Format**: `postgresql://[user]:[password]@[host]:[port]/[database]`
+  
+  **Example**: `postgresql://postgres:postgres@localhost:54322/postgres`
+  
+  **Where to get it**:
+  - **Local Development**: Use Docker Compose (see [Database Setup](/configuration/database))
+  - **Production**: Get from your hosting provider ([Vercel Postgres](https://vercel.com/docs/storage/vercel-postgres), [Neon](https://neon.tech), [Supabase](https://supabase.com), etc.)
+  
+  <Warning>
+    Keep your database credentials secure. Never commit `.env` files to version control.
+  </Warning>
+</ParamField>
+
+<ParamField path="STRIPE_SECRET_KEY" type="string" required>
+  Your Stripe secret API key for processing payments
+  
+  **Format**: `sk_test_...` (test mode) or `sk_live_...` (production)
+  
+  **Where to get it**: 
+  1. Go to [Stripe Dashboard > API Keys](https://dashboard.stripe.com/test/apikeys)
+  2. Copy the "Secret key" (starts with `sk_test_` for test mode)
+  3. For production, switch to live mode and use your live secret key
+  
+  <Warning>
+    Never expose your secret key in client-side code or commit it to version control.
+  </Warning>
+</ParamField>
+
+<ParamField path="STRIPE_WEBHOOK_SECRET" type="string" required>
+  Stripe webhook signing secret for verifying webhook events
+  
+  **Format**: `whsec_...`
+  
+  **Where to get it**:
+  
+  **Development**:
+  ```bash
+  stripe listen --print-secret
+  ```
+  
+  This command will output your webhook secret. Copy the value that starts with `whsec_`.
+  
+  **Production**:
+  1. Go to [Stripe Dashboard > Webhooks](https://dashboard.stripe.com/webhooks)
+  2. Click "Add endpoint"
+  3. Enter your webhook URL: `https://yourdomain.com/api/stripe/webhook`
+  4. Select events to listen to (at minimum: `customer.subscription.updated`, `customer.subscription.deleted`)
+  5. Copy the "Signing secret" from the webhook details page
+  
+  <Note>
+    The webhook secret ensures that webhook events are actually coming from Stripe and haven't been tampered with.
+  </Note>
+</ParamField>
+
+<ParamField path="BASE_URL" type="string" required>
+  The base URL of your application
+  
+  **Development**: `http://localhost:3000`
+  
+  **Production**: `https://yourdomain.com`
+  
+  This is used for:
+  - Stripe checkout success/cancel redirects
+  - Billing portal return URLs
+  - Email links and callbacks
+</ParamField>
+
+<ParamField path="AUTH_SECRET" type="string" required>
+  Secret key for signing and encrypting authentication tokens
+  
+  **How to generate**:
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  ```
+  
+  Or use OpenSSL:
+  ```bash
+  openssl rand -hex 32
+  ```
+  
+  <Warning>
+    Use a cryptographically secure random value. Never reuse secrets across environments.
+  </Warning>
+</ParamField>
+
+## Example Configuration
+
+Your `.env` file should look like this:
+
+```bash .env
+POSTGRES_URL=postgresql://postgres:postgres@localhost:54322/postgres
+STRIPE_SECRET_KEY=sk_test_51Abc123...
+STRIPE_WEBHOOK_SECRET=whsec_abc123...
+BASE_URL=http://localhost:3000
+AUTH_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6
+```
+
+## File Location
+
+<Warning>
+  The environment variables **must** be stored in `.env` (not `.env.local`) unless you modify the configuration.
+</Warning>
+
+From the source code comments in `.env.example`:
+
+```bash
+# Note: this must be .env, not .env.local, without further configuration changes.
+```
+
+This is because Drizzle ORM and other server-side scripts need to access these variables outside of the Next.js runtime.
+
+## Security Best Practices
+
+<Warning>
+  **Never commit your `.env` file to version control**. The `.gitignore` file should include `.env` to prevent accidental commits.
+</Warning>
+
+<Tip>
+  Use different values for development, staging, and production environments. Never share production credentials.
+</Tip>
+
+### Additional Security Tips
+
+1. **Rotate secrets regularly**: Change `AUTH_SECRET` and regenerate API keys periodically
+2. **Use test mode in development**: Always use Stripe test keys (`sk_test_`) during development
+3. **Limit API key permissions**: Use restricted API keys in production when possible
+4. **Monitor access**: Review Stripe API logs and database access logs regularly
+5. **Environment-specific values**: Never use production database URLs or API keys in development
+
+## Troubleshooting
+
+### "POSTGRES_URL environment variable is not set"
+
+This error occurs when the database client tries to connect without finding the `POSTGRES_URL` variable. Make sure:
+- Your `.env` file exists in the project root
+- The variable name is spelled correctly (case-sensitive)
+- There are no extra spaces around the `=` sign
+
+### Stripe webhook signature verification failed
+
+This usually means:
+- `STRIPE_WEBHOOK_SECRET` is incorrect or missing
+- The webhook secret doesn't match the endpoint configuration
+- In development, the `stripe listen` command isn't running
+
+See the [Stripe Configuration](/configuration/stripe) page for detailed webhook setup instructions.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Database Setup" icon="database" href="/configuration/database">
+    Configure PostgreSQL and run migrations
+  </Card>
+  <Card title="Stripe Setup" icon="credit-card" href="/configuration/stripe">
+    Set up payment processing and webhooks
+  </Card>
+</CardGroup>

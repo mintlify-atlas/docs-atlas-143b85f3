@@ -1,0 +1,301 @@
+---
+title: 'Session Management'
+description: 'Functions for managing user sessions with JWT tokens and cookies'
+---
+
+## signToken()
+
+Creates a signed JWT token for a user session.
+
+<ParamField path="payload" type="SessionData" required>
+  The session data to encode in the token
+  
+  <Expandable title="SessionData">
+    <ResponseField name="user" type="object" required>
+      User information
+      <Expandable title="user">
+        <ResponseField name="id" type="number" required>
+          The user's ID
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="expires" type="string" required>
+      ISO 8601 timestamp indicating when the session expires
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Promise<string>">
+  A promise that resolves to the signed JWT token string
+</ResponseField>
+
+### Function Signature
+
+```typescript
+async function signToken(payload: SessionData): Promise<string>
+```
+
+### Implementation Details
+
+- Uses HS256 algorithm for signing
+- Sets token expiration to 1 day from issuance
+- Uses `AUTH_SECRET` environment variable as the signing key
+- Automatically sets the issued at (`iat`) timestamp
+
+### Example
+
+<CodeGroup>
+```typescript Example Usage
+import { signToken } from '@/lib/auth/session';
+
+const sessionData = {
+  user: { id: 123 },
+  expires: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+};
+
+const token = await signToken(sessionData);
+console.log(token); // eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+</CodeGroup>
+
+---
+
+## verifyToken()
+
+Verifies and decodes a JWT token, returning the session data.
+
+<ParamField path="input" type="string" required>
+  The JWT token string to verify
+</ParamField>
+
+<ResponseField name="return" type="Promise<SessionData>">
+  A promise that resolves to the decoded session data
+  
+  <Expandable title="SessionData">
+    <ResponseField name="user" type="object" required>
+      User information
+      <Expandable title="user">
+        <ResponseField name="id" type="number" required>
+          The user's ID
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="expires" type="string" required>
+      ISO 8601 timestamp indicating when the session expires
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Function Signature
+
+```typescript
+async function verifyToken(input: string): Promise<SessionData>
+```
+
+### Implementation Details
+
+- Validates the token signature using `AUTH_SECRET` environment variable
+- Only accepts HS256 algorithm
+- Throws an error if the token is invalid or expired
+
+### Example
+
+<CodeGroup>
+```typescript Example Usage
+import { verifyToken } from '@/lib/auth/session';
+
+try {
+  const sessionData = await verifyToken(token);
+  console.log(sessionData.user.id); // 123
+} catch (error) {
+  console.error('Invalid or expired token');
+}
+```
+</CodeGroup>
+
+---
+
+## getSession()
+
+Retrieves and verifies the current user's session from cookies.
+
+<ResponseField name="return" type="Promise<SessionData | null>">
+  A promise that resolves to the session data if a valid session exists, or null if no session is found
+  
+  <Expandable title="SessionData">
+    <ResponseField name="user" type="object" required>
+      User information
+      <Expandable title="user">
+        <ResponseField name="id" type="number" required>
+          The user's ID
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="expires" type="string" required>
+      ISO 8601 timestamp indicating when the session expires
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Function Signature
+
+```typescript
+async function getSession(): Promise<SessionData | null>
+```
+
+### Implementation Details
+
+- Reads the `session` cookie value
+- Returns `null` if no session cookie exists
+- Verifies the token and returns the decoded session data
+- Must be called in a server component or API route
+
+### Example
+
+<CodeGroup>
+```typescript Server Component
+import { getSession } from '@/lib/auth/session';
+
+export default async function DashboardPage() {
+  const session = await getSession();
+  
+  if (!session) {
+    redirect('/sign-in');
+  }
+  
+  return <div>Welcome, user {session.user.id}</div>;
+}
+```
+
+```typescript API Route
+import { getSession } from '@/lib/auth/session';
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  const session = await getSession();
+  
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  
+  return NextResponse.json({ userId: session.user.id });
+}
+```
+</CodeGroup>
+
+---
+
+## setSession()
+
+Creates a new session for a user and stores it in an HTTP-only cookie.
+
+<ParamField path="user" type="NewUser" required>
+  The user object to create a session for
+  
+  <Expandable title="NewUser">
+    <ResponseField name="id" type="number" required>
+      The user's ID (must be defined)
+    </ResponseField>
+    <ResponseField name="email" type="string" required>
+      The user's email address
+    </ResponseField>
+    <ResponseField name="passwordHash" type="string" required>
+      The user's hashed password
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      The user's name (optional)
+    </ResponseField>
+    <ResponseField name="role" type="string">
+      The user's role (defaults to 'member')
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="return" type="Promise<void>">
+  A promise that resolves when the session cookie is set
+</ResponseField>
+
+### Function Signature
+
+```typescript
+async function setSession(user: NewUser): Promise<void>
+```
+
+### Implementation Details
+
+- Sets session expiration to 24 hours (1 day) from creation
+- Creates a signed JWT token with the user ID and expiration time
+- Stores the token in an HTTP-only cookie named `session`
+- Cookie configuration:
+  - `httpOnly: true` - Prevents client-side JavaScript access
+  - `secure: true` - Only sent over HTTPS
+  - `sameSite: 'lax'` - CSRF protection
+  - `expires` - Set to match session expiration (24 hours)
+
+### Example
+
+<CodeGroup>
+```typescript Sign In Action
+import { setSession } from '@/lib/auth/session';
+import { getUserByEmail } from '@/lib/db/queries';
+import { comparePasswords } from '@/lib/auth/session';
+
+export async function signInAction(email: string, password: string) {
+  const user = await getUserByEmail(email);
+  
+  if (!user) {
+    throw new Error('Invalid credentials');
+  }
+  
+  const isValid = await comparePasswords(password, user.passwordHash);
+  
+  if (!isValid) {
+    throw new Error('Invalid credentials');
+  }
+  
+  await setSession(user);
+  
+  return { success: true };
+}
+```
+
+```typescript Sign Up Action
+import { setSession, hashPassword } from '@/lib/auth/session';
+import { createUser } from '@/lib/db/queries';
+
+export async function signUpAction(email: string, password: string, name: string) {
+  const passwordHash = await hashPassword(password);
+  
+  const user = await createUser({
+    email,
+    passwordHash,
+    name,
+    role: 'member'
+  });
+  
+  await setSession(user);
+  
+  return { success: true };
+}
+```
+</CodeGroup>
+
+## Type Definitions
+
+```typescript
+type SessionData = {
+  user: { id: number };
+  expires: string;
+};
+
+type NewUser = {
+  id?: number;
+  email: string;
+  passwordHash: string;
+  name?: string | null;
+  role?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  deletedAt?: Date | null;
+};
+```

@@ -1,0 +1,371 @@
+---
+title: 'Billing'
+description: 'Stripe integration for subscription management, checkout, and customer portal'
+---
+
+## Overview
+
+The Next.js SaaS Starter integrates with Stripe for complete subscription billing management. Each team can have a Stripe subscription, and the system handles checkout, webhooks, and customer portal access.
+
+## Setup
+
+### Stripe Client
+
+The Stripe client is initialized in `lib/payments/stripe.ts`:
+
+```typescript lib/payments/stripe.ts
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2025-04-30.basil'
+});
+```
+
+<Warning>
+  Ensure you have set the `STRIPE_SECRET_KEY` environment variable with your Stripe secret key.
+</Warning>
+
+## Checkout Flow
+
+### Creating a Checkout Session
+
+Use `createCheckoutSession()` to initiate a Stripe checkout for a team:
+
+```typescript lib/payments/stripe.ts
+export async function createCheckoutSession({
+  team,
+  priceId
+}: {
+  team: Team | null;
+  priceId: string;
+}) {
+  const user = await getUser();
+
+  if (!team || !user) {
+    redirect(`/sign-up?redirect=checkout&priceId=${priceId}`);
+  }
+
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ['card'],
+    line_items: [
+      {
+        price: priceId,
+        quantity: 1
+      }
+    ],
+    mode: 'subscription',
+    success_url: `${process.env.BASE_URL}/api/stripe/checkout?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.BASE_URL}/pricing`,
+    customer: team.stripeCustomerId || undefined,
+    client_reference_id: user.id.toString(),
+    allow_promotion_codes: true,
+    subscription_data: {
+      trial_period_days: 14
+    }
+  });
+
+  redirect(session.url!);
+}
+```
+
+<ParamField path="team" type="Team | null" required>
+  The team object. If null, the user is redirected to sign up.
+</ParamField>
+
+<ParamField path="priceId" type="string" required>
+  The Stripe price ID for the subscription plan.
+</ParamField>
+
+### Checkout Features
+
+<Steps>
+  <Step title="Authentication check">
+    Verifies the user is authenticated and has a team. Redirects to sign-up if not.
+  </Step>
+  
+  <Step title="Session creation">
+    Creates a Stripe checkout session with the specified price.
+  </Step>
+  
+  <Step title="Customer linking">
+    Links to existing Stripe customer if team already has one.
+  </Step>
+  
+  <Step title="Trial period">
+    Automatically applies a 14-day trial period to new subscriptions.
+  </Step>
+  
+  <Step title="Promotion codes">
+    Enables promotion code input during checkout.
+  </Step>
+</Steps>
+
+<Note>
+  The `client_reference_id` stores the user ID for linking the subscription to the correct team after checkout.
+</Note>
+
+## Customer Portal
+
+### Creating a Portal Session
+
+The customer portal allows users to manage their subscription, update payment methods, and cancel:
+
+```typescript lib/payments/stripe.ts
+export async function createCustomerPortalSession(team: Team) {
+  if (!team.stripeCustomerId || !team.stripeProductId) {
+    redirect('/pricing');
+  }
+
+  let configuration: Stripe.BillingPortal.Configuration;
+  const configurations = await stripe.billingPortal.configurations.list();
+
+  if (configurations.data.length > 0) {
+    configuration = configurations.data[0];
+  } else {
+    const product = await stripe.products.retrieve(team.stripeProductId);
+    if (!product.active) {
+      throw new Error("Team's product is not active in Stripe");
+    }
+
+    const prices = await stripe.prices.list({
+      product: product.id,
+      active: true
+    });
+
+    configuration = await stripe.billingPortal.configurations.create({
+      business_profile: {
+        headline: 'Manage your subscription'
+      },
+      features: {
+        subscription_update: {
+          enabled: true,
+          default_allowed_updates: ['price', 'quantity', 'promotion_code'],
+          proration_behavior: 'create_prorations',
+          products: [
+            {
+              product: product.id,
+              prices: prices.data.map((price) => price.id)
+            }
+          ]
+        },
+        subscription_cancel: {
+          enabled: true,
+          mode: 'at_period_end',
+          cancellation_reason: {
+            enabled: true,
+            options: [
+              'too_expensive',
+              'missing_features',
+              'switched_service',
+              'unused',
+              'other'
+            ]
+          }
+        },
+        payment_method_update: {
+          enabled: true
+        }
+      }
+    });
+  }
+
+  return stripe.billingPortal.sessions.create({
+    customer: team.stripeCustomerId,
+    return_url: `${process.env.BASE_URL}/dashboard`,
+    configuration: configuration.id
+  });
+}
+```
+
+### Portal Features
+
+The customer portal is configured to allow:
+
+- **Subscription Updates**: Change plan, quantity, or apply promotion codes
+- **Cancellation**: Cancel subscription at the end of the billing period
+- **Payment Methods**: Update credit card information
+- **Cancellation Feedback**: Collect reasons for cancellation
+
+<Tip>
+  The portal configuration is created automatically if none exists. This ensures teams can always access subscription management.
+</Tip>
+
+## Webhook Handling
+
+### Subscription Changes
+
+Handle subscription lifecycle events with `handleSubscriptionChange()`:
+
+```typescript lib/payments/stripe.ts
+export async function handleSubscriptionChange(
+  subscription: Stripe.Subscription
+) {
+  const customerId = subscription.customer as string;
+  const subscriptionId = subscription.id;
+  const status = subscription.status;
+
+  const team = await getTeamByStripeCustomerId(customerId);
+
+  if (!team) {
+    console.error('Team not found for Stripe customer:', customerId);
+    return;
+  }
+
+  if (status === 'active' || status === 'trialing') {
+    const plan = subscription.items.data[0]?.plan;
+    await updateTeamSubscription(team.id, {
+      stripeSubscriptionId: subscriptionId,
+      stripeProductId: plan?.product as string,
+      planName: (plan?.product as Stripe.Product).name,
+      subscriptionStatus: status
+    });
+  } else if (status === 'canceled' || status === 'unpaid') {
+    await updateTeamSubscription(team.id, {
+      stripeSubscriptionId: null,
+      stripeProductId: null,
+      planName: null,
+      subscriptionStatus: status
+    });
+  }
+}
+```
+
+### Handled Subscription Statuses
+
+<CodeGroup>
+```typescript Active
+// Subscription is active and paid
+status: 'active'
+```
+
+```typescript Trialing
+// Subscription is in trial period
+status: 'trialing'
+```
+
+```typescript Canceled
+// Subscription was canceled
+status: 'canceled'
+```
+
+```typescript Unpaid
+// Payment failed
+status: 'unpaid'
+```
+</CodeGroup>
+
+## Database Integration
+
+### Team Subscription Fields
+
+The teams table stores Stripe-related data:
+
+```typescript lib/db/schema.ts
+export const teams = pgTable('teams', {
+  // ... other fields
+  stripeCustomerId: text('stripe_customer_id').unique(),
+  stripeSubscriptionId: text('stripe_subscription_id').unique(),
+  stripeProductId: text('stripe_product_id'),
+  planName: varchar('plan_name', { length: 50 }),
+  subscriptionStatus: varchar('subscription_status', { length: 20 }),
+});
+```
+
+### Updating Team Subscriptions
+
+```typescript lib/db/queries.ts
+export async function updateTeamSubscription(
+  teamId: number,
+  subscriptionData: {
+    stripeSubscriptionId: string | null;
+    stripeProductId: string | null;
+    planName: string | null;
+    subscriptionStatus: string;
+  }
+) {
+  await db
+    .update(teams)
+    .set({
+      ...subscriptionData,
+      updatedAt: new Date()
+    })
+    .where(eq(teams.id, teamId));
+}
+```
+
+## Product and Price Management
+
+### Fetching Products
+
+Retrieve all active Stripe products:
+
+```typescript lib/payments/stripe.ts
+export async function getStripeProducts() {
+  const products = await stripe.products.list({
+    active: true,
+    expand: ['data.default_price']
+  });
+
+  return products.data.map((product) => ({
+    id: product.id,
+    name: product.name,
+    description: product.description,
+    defaultPriceId:
+      typeof product.default_price === 'string'
+        ? product.default_price
+        : product.default_price?.id
+  }));
+}
+```
+
+### Fetching Prices
+
+Retrieve all active recurring prices:
+
+```typescript lib/payments/stripe.ts
+export async function getStripePrices() {
+  const prices = await stripe.prices.list({
+    expand: ['data.product'],
+    active: true,
+    type: 'recurring'
+  });
+
+  return prices.data.map((price) => ({
+    id: price.id,
+    productId:
+      typeof price.product === 'string' ? price.product : price.product.id,
+    unitAmount: price.unit_amount,
+    currency: price.currency,
+    interval: price.recurring?.interval,
+    trialPeriodDays: price.recurring?.trial_period_days
+  }));
+}
+```
+
+## Environment Variables
+
+<ParamField path="STRIPE_SECRET_KEY" type="string" required>
+  Your Stripe secret key (starts with `sk_`)
+</ParamField>
+
+<ParamField path="BASE_URL" type="string" required>
+  The base URL of your application for redirect URLs
+</ParamField>
+
+## Best Practices
+
+<Warning>
+  Always validate webhook signatures in production to ensure events are genuinely from Stripe.
+</Warning>
+
+<Tip>
+  Use Stripe's test mode during development. Test mode keys start with `sk_test_` and use test card numbers.
+</Tip>
+
+<Note>
+  The trial period is set to 14 days by default. Modify `trial_period_days` in `createCheckoutSession()` to change this.
+</Note>
+
+## Related
+
+- [Teams](/features/teams) - Learn about the team structure
+- [Activity Logs](/features/activity-logs) - Track billing-related activities
+- [Authentication](/features/authentication) - User authentication system

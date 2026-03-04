@@ -1,0 +1,476 @@
+---
+title: Database Configuration
+description: Set up PostgreSQL, run migrations, and seed your database for the Next.js SaaS Starter
+---
+
+The Next.js SaaS Starter uses PostgreSQL as its database with Drizzle ORM for type-safe database operations and migrations.
+
+## Database Stack
+
+- **Database**: PostgreSQL 16.4 (Alpine Linux)
+- **ORM**: Drizzle ORM
+- **Migration Tool**: Drizzle Kit
+- **Client Library**: `postgres` (node-postgres)
+
+## Quick Start
+
+The fastest way to get your database up and running:
+
+```bash
+# Run the interactive setup (recommended)
+pnpm db:setup
+
+# Generate migration files
+pnpm db:generate
+
+# Apply migrations to database
+pnpm db:migrate
+
+# Seed the database with initial data
+pnpm db:seed
+```
+
+## Database Setup Options
+
+The `pnpm db:setup` script offers two options:
+
+### Option 1: Local PostgreSQL (Docker)
+
+Recommended for development. Automatically sets up a PostgreSQL container.
+
+**Requirements**:
+- Docker installed and running
+
+**What it does**:
+1. Creates a `docker-compose.yml` file
+2. Starts a PostgreSQL 16.4 container
+3. Configures the database with default credentials
+4. Sets `POSTGRES_URL` to `postgres://postgres:postgres@localhost:54322/postgres`
+
+**Docker Compose Configuration**:
+
+```yaml docker-compose.yml
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    container_name: next_saas_starter_postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "54322:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+```
+
+<Note>
+  The PostgreSQL container runs on port **54322** (not the default 5432) to avoid conflicts with other PostgreSQL installations.
+</Note>
+
+**Managing the Docker Container**:
+
+```bash
+# Start the database
+docker compose up -d
+
+# Stop the database
+docker compose down
+
+# View logs
+docker compose logs postgres
+
+# Remove all data (destructive!)
+docker compose down -v
+```
+
+### Option 2: Remote PostgreSQL
+
+Use a managed PostgreSQL service for development or production.
+
+**Recommended Providers**:
+- [Vercel Postgres](https://vercel.com/docs/storage/vercel-postgres)
+- [Neon](https://neon.tech)
+- [Supabase](https://supabase.com)
+- [Railway](https://railway.app)
+- [Digital Ocean](https://www.digitalocean.com/products/managed-databases-postgresql)
+
+When prompted by `pnpm db:setup`, choose option `R` and enter your connection string.
+
+## Drizzle Configuration
+
+The database configuration is defined in `drizzle.config.ts`:
+
+```typescript drizzle.config.ts
+import type { Config } from 'drizzle-kit';
+
+export default {
+  schema: './lib/db/schema.ts',
+  out: './lib/db/migrations',
+  dialect: 'postgresql',
+  dbCredentials: {
+    url: process.env.POSTGRES_URL!,
+  },
+} satisfies Config;
+```
+
+<ParamField path="schema" type="string">
+  Path to your database schema definition (`lib/db/schema.ts`)
+</ParamField>
+
+<ParamField path="out" type="string">
+  Directory where migration files are generated (`lib/db/migrations`)
+</ParamField>
+
+<ParamField path="dialect" type="string">
+  Database dialect - `postgresql` in this case
+</ParamField>
+
+<ParamField path="dbCredentials.url" type="string">
+  PostgreSQL connection string from the `POSTGRES_URL` environment variable
+</ParamField>
+
+## Database Schema
+
+The starter includes the following tables (defined in `lib/db/schema.ts`):
+
+### Users Table
+
+Stores user accounts and authentication information.
+
+```typescript
+users: {
+  id: serial (primary key)
+  name: varchar(100)
+  email: varchar(255) unique, not null
+  passwordHash: text, not null
+  role: varchar(20), default 'member'
+  createdAt: timestamp, default now()
+  updatedAt: timestamp, default now()
+  deletedAt: timestamp (soft delete)
+}
+```
+
+### Teams Table
+
+Stores team/organization information and Stripe subscription details.
+
+```typescript
+teams: {
+  id: serial (primary key)
+  name: varchar(100), not null
+  createdAt: timestamp, default now()
+  updatedAt: timestamp, default now()
+  stripeCustomerId: text unique
+  stripeSubscriptionId: text unique
+  stripeProductId: text
+  planName: varchar(50)
+  subscriptionStatus: varchar(20)
+}
+```
+
+### Team Members Table
+
+Join table linking users to teams with roles.
+
+```typescript
+teamMembers: {
+  id: serial (primary key)
+  userId: integer → users.id
+  teamId: integer → teams.id
+  role: varchar(50), not null
+  joinedAt: timestamp, default now()
+}
+```
+
+### Activity Logs Table
+
+Tracks user and team activities for audit trails.
+
+```typescript
+activityLogs: {
+  id: serial (primary key)
+  teamId: integer → teams.id
+  userId: integer → users.id
+  action: text, not null
+  timestamp: timestamp, default now()
+  ipAddress: varchar(45)
+}
+```
+
+### Invitations Table
+
+Manages team invitation system.
+
+```typescript
+invitations: {
+  id: serial (primary key)
+  teamId: integer → teams.id
+  email: varchar(255), not null
+  role: varchar(50), not null
+  invitedBy: integer → users.id
+  invitedAt: timestamp, default now()
+  status: varchar(20), default 'pending'
+}
+```
+
+## Database Commands
+
+All database operations are available as npm scripts:
+
+<CodeGroup>
+
+```bash Setup
+# Interactive setup - creates .env and optionally starts Docker
+pnpm db:setup
+```
+
+```bash Generate Migrations
+# Generate migration files from schema changes
+pnpm db:generate
+```
+
+```bash Run Migrations
+# Apply pending migrations to the database
+pnpm db:migrate
+```
+
+```bash Seed Database
+# Populate database with initial data
+pnpm db:seed
+```
+
+```bash Drizzle Studio
+# Open visual database browser
+pnpm db:studio
+```
+
+</CodeGroup>
+
+### Command Details
+
+<ParamField path="pnpm db:setup" type="command">
+  **Script**: `npx tsx lib/db/setup.ts`
+  
+  Interactive setup wizard that:
+  - Checks for Stripe CLI
+  - Sets up PostgreSQL (Docker or remote)
+  - Configures Stripe keys
+  - Generates `AUTH_SECRET`
+  - Creates `.env` file
+</ParamField>
+
+<ParamField path="pnpm db:generate" type="command">
+  **Script**: `drizzle-kit generate`
+  
+  Generates SQL migration files from schema changes. Run this after modifying `lib/db/schema.ts`.
+</ParamField>
+
+<ParamField path="pnpm db:migrate" type="command">
+  **Script**: `drizzle-kit migrate`
+  
+  Applies pending migrations to your database. Safe to run multiple times.
+</ParamField>
+
+<ParamField path="pnpm db:seed" type="command">
+  **Script**: `npx tsx lib/db/seed.ts`
+  
+  Seeds the database with:
+  - Test user: `test@test.com` / `admin123` (owner role)
+  - Test team: "Test Team"
+  - Stripe products: Base ($8/month) and Plus ($12/month)
+</ParamField>
+
+<ParamField path="pnpm db:studio" type="command">
+  **Script**: `drizzle-kit studio`
+  
+  Launches Drizzle Studio - a web-based database GUI at `https://local.drizzle.studio`
+</ParamField>
+
+## Database Connection
+
+The database client is initialized in `lib/db/drizzle.ts`:
+
+```typescript lib/db/drizzle.ts
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
+import * as schema from './schema';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+if (!process.env.POSTGRES_URL) {
+  throw new Error('POSTGRES_URL environment variable is not set');
+}
+
+export const client = postgres(process.env.POSTGRES_URL);
+export const db = drizzle(client, { schema });
+```
+
+<Note>
+  The application will throw an error on startup if `POSTGRES_URL` is not set. Make sure your `.env` file is properly configured.
+</Note>
+
+## Seeding the Database
+
+The seed script (`lib/db/seed.ts`) creates initial data for development and testing:
+
+### What Gets Seeded
+
+**1. Test User**
+- Email: `test@test.com`
+- Password: `admin123`
+- Role: `owner`
+
+**2. Test Team**
+- Name: "Test Team"
+- Test user is added as owner
+
+**3. Stripe Products**
+
+**Base Plan**:
+- Price: $8/month
+- Trial: 7 days
+
+**Plus Plan**:
+- Price: $12/month  
+- Trial: 7 days
+
+<Warning>
+  The seed script creates Stripe products in your connected Stripe account. Make sure you're using test mode during development.
+</Warning>
+
+### Running the Seed Script
+
+```bash
+pnpm db:seed
+```
+
+This will:
+1. Connect to your database
+2. Create the test user and team
+3. Create Stripe products and prices
+4. Exit with success or error status
+
+<Tip>
+  After seeding, you can log in with `test@test.com` / `admin123` to test the application.
+</Tip>
+
+## Migrations Workflow
+
+When you modify the database schema:
+
+1. **Edit the schema** in `lib/db/schema.ts`
+
+2. **Generate migration**:
+   ```bash
+   pnpm db:generate
+   ```
+   This creates SQL files in `lib/db/migrations/`
+
+3. **Review the migration** (recommended):
+   Check the generated SQL to ensure it matches your intentions
+
+4. **Apply the migration**:
+   ```bash
+   pnpm db:migrate
+   ```
+
+5. **Update TypeScript types**:
+   Drizzle automatically infers types from your schema. Import and use them:
+   ```typescript
+   import type { User, Team } from '@/lib/db/schema';
+   ```
+
+## Using Drizzle Studio
+
+Drizzle Studio provides a visual interface to browse and edit your database:
+
+```bash
+pnpm db:studio
+```
+
+This opens a web interface where you can:
+- Browse all tables and records
+- Run queries
+- Edit data directly
+- Explore relationships
+- View schema information
+
+<Note>
+  Drizzle Studio runs locally and connects directly to your database using the `POSTGRES_URL` from your `.env` file.
+</Note>
+
+## Production Considerations
+
+### Connection Pooling
+
+For production deployments, consider using connection pooling:
+
+```typescript
+import postgres from 'postgres';
+
+const client = postgres(process.env.POSTGRES_URL!, {
+  max: 10, // Maximum number of connections
+  idle_timeout: 20,
+  connect_timeout: 10,
+});
+```
+
+### Migrations in Production
+
+<Warning>
+  Always test migrations in a staging environment before applying to production.
+</Warning>
+
+Options for running migrations in production:
+
+1. **Manual deployment**: Run `pnpm db:migrate` during deployment
+2. **Build-time**: Add migration to your build script
+3. **Automated**: Use a database migration service
+
+### Backup Strategy
+
+Regularly backup your production database:
+- Enable automated backups on your database provider
+- Test restore procedures
+- Store backups in multiple locations
+- Keep backups for at least 30 days
+
+## Troubleshooting
+
+### Connection Refused
+
+If you see "connection refused" errors:
+- Verify Docker container is running: `docker ps`
+- Check the port is correct (54322 for local setup)
+- Ensure `POSTGRES_URL` in `.env` is correct
+
+### Migration Errors
+
+If migrations fail:
+- Check database connection
+- Ensure no syntax errors in schema
+- Review the generated SQL in `lib/db/migrations/`
+- Check for conflicting migrations
+
+### Seed Script Fails
+
+Common issues:
+- Database not migrated: Run `pnpm db:migrate` first
+- Stripe API error: Verify `STRIPE_SECRET_KEY` is set and valid
+- Duplicate data: Drop and recreate database if needed
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="key" href="/configuration/environment-variables">
+    Configure all required environment variables
+  </Card>
+  <Card title="Stripe Setup" icon="credit-card" href="/configuration/stripe">
+    Set up payment processing and subscriptions
+  </Card>
+</CardGroup>

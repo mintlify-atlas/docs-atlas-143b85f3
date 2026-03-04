@@ -1,0 +1,405 @@
+---
+title: 'Middleware'
+description: 'Global and local middleware for authentication, session management, and action validation'
+---
+
+## Overview
+
+The Next.js SaaS Starter uses two types of middleware:
+
+1. **Global Middleware**: Runs on every request to handle session management and route protection
+2. **Action Middleware**: Wraps Server Actions to provide validation, authentication, and team context
+
+## Global Middleware
+
+### Implementation
+
+The global middleware is defined in `middleware.ts` at the root of the project:
+
+```typescript middleware.ts
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { signToken, verifyToken } from '@/lib/auth/session';
+
+const protectedRoutes = '/dashboard';
+
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const sessionCookie = request.cookies.get('session');
+  const isProtectedRoute = pathname.startsWith(protectedRoutes);
+
+  if (isProtectedRoute && !sessionCookie) {
+    return NextResponse.redirect(new URL('/sign-in', request.url));
+  }
+
+  let res = NextResponse.next();
+
+  if (sessionCookie && request.method === 'GET') {
+    try {
+      const parsed = await verifyToken(sessionCookie.value);
+      const expiresInOneDay = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+      res.cookies.set({
+        name: 'session',
+        value: await signToken({
+          ...parsed,
+          expires: expiresInOneDay.toISOString()
+        }),
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        expires: expiresInOneDay
+      });
+    } catch (error) {
+      console.error('Error updating session:', error);
+      res.cookies.delete('session');
+      if (isProtectedRoute) {
+        return NextResponse.redirect(new URL('/sign-in', request.url));
+      }
+    }
+  }
+
+  return res;
+}
+
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  runtime: 'nodejs'
+};
+```
+
+### Middleware Features
+
+<Steps>
+  <Step title="Route protection">
+    Checks if the request is for a protected route and redirects to sign-in if no session exists.
+  </Step>
+  
+  <Step title="Session verification">
+    Verifies the JWT token on every GET request to ensure it's still valid.
+  </Step>
+  
+  <Step title="Session refresh">
+    Automatically refreshes the session token to extend the expiration time.
+  </Step>
+  
+  <Step title="Error handling">
+    Deletes invalid sessions and redirects to sign-in if on a protected route.
+  </Step>
+</Steps>
+
+<Note>
+  Sessions are only refreshed on GET requests to avoid issues with form submissions and API calls.
+</Note>
+
+### Protected Routes Configuration
+
+Currently, the middleware protects all routes starting with `/dashboard`:
+
+```typescript middleware.ts
+const protectedRoutes = '/dashboard';
+```
+
+To protect multiple route patterns, use an array:
+
+```typescript
+const protectedRoutes = ['/dashboard', '/settings', '/admin'];
+const isProtectedRoute = protectedRoutes.some(route => pathname.startsWith(route));
+```
+
+### Matcher Configuration
+
+The matcher excludes certain paths from middleware processing:
+
+```typescript middleware.ts
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  runtime: 'nodejs'
+};
+```
+
+This pattern excludes:
+- API routes (`/api/*`)
+- Next.js static files (`/_next/static/*`)
+- Next.js image optimization (`/_next/image/*`)
+- Favicon (`/favicon.ico`)
+
+<Warning>
+  The matcher uses a negative lookahead regex. Be careful when modifying it to ensure you don't accidentally block necessary routes.
+</Warning>
+
+## Action Middleware
+
+Action middleware provides security and validation for Server Actions. These are defined in `lib/auth/middleware.ts`.
+
+### Type Definitions
+
+```typescript lib/auth/middleware.ts
+export type ActionState = {
+  error?: string;
+  success?: string;
+  [key: string]: any;
+};
+
+type ValidatedActionFunction<S extends z.ZodType<any, any>, T> = (
+  data: z.infer<S>,
+  formData: FormData
+) => Promise<T>;
+
+type ValidatedActionWithUserFunction<S extends z.ZodType<any, any>, T> = (
+  data: z.infer<S>,
+  formData: FormData,
+  user: User
+) => Promise<T>;
+
+type ActionWithTeamFunction<T> = (
+  formData: FormData,
+  team: TeamDataWithMembers
+) => Promise<T>;
+```
+
+### validatedAction
+
+Validates form data against a Zod schema:
+
+```typescript lib/auth/middleware.ts
+export function validatedAction<S extends z.ZodType<any, any>, T>(
+  schema: S,
+  action: ValidatedActionFunction<S, T>
+) {
+  return async (prevState: ActionState, formData: FormData) => {
+    const result = schema.safeParse(Object.fromEntries(formData));
+    if (!result.success) {
+      return { error: result.error.errors[0].message };
+    }
+
+    return action(result.data, formData);
+  };
+}
+```
+
+#### Usage Example
+
+```typescript app/(login)/actions.ts
+const signInSchema = z.object({
+  email: z.string().email().min(3).max(255),
+  password: z.string().min(8).max(100)
+});
+
+export const signIn = validatedAction(signInSchema, async (data, formData) => {
+  const { email, password } = data;
+  // ... authentication logic
+});
+```
+
+<Tip>
+  Use `validatedAction` for public actions like sign-in and sign-up that don't require authentication.
+</Tip>
+
+### validatedActionWithUser
+
+Validates form data and ensures the user is authenticated:
+
+```typescript lib/auth/middleware.ts
+export function validatedActionWithUser<S extends z.ZodType<any, any>, T>(
+  schema: S,
+  action: ValidatedActionWithUserFunction<S, T>
+) {
+  return async (prevState: ActionState, formData: FormData) => {
+    const user = await getUser();
+    if (!user) {
+      throw new Error('User is not authenticated');
+    }
+
+    const result = schema.safeParse(Object.fromEntries(formData));
+    if (!result.success) {
+      return { error: result.error.errors[0].message };
+    }
+
+    return action(result.data, formData, user);
+  };
+}
+```
+
+#### Usage Example
+
+```typescript app/(login)/actions.ts
+const updatePasswordSchema = z.object({
+  currentPassword: z.string().min(8).max(100),
+  newPassword: z.string().min(8).max(100),
+  confirmPassword: z.string().min(8).max(100)
+});
+
+export const updatePassword = validatedActionWithUser(
+  updatePasswordSchema,
+  async (data, _, user) => {
+    const { currentPassword, newPassword, confirmPassword } = data;
+    
+    const isPasswordValid = await comparePasswords(
+      currentPassword,
+      user.passwordHash
+    );
+
+    if (!isPasswordValid) {
+      return { error: 'Current password is incorrect.' };
+    }
+
+    // ... password update logic
+  }
+);
+```
+
+<Note>
+  The user parameter is automatically provided by the middleware, so you can access user data without additional queries.
+</Note>
+
+### withTeam
+
+Ensures the user is authenticated and has team context:
+
+```typescript lib/auth/middleware.ts
+export function withTeam<T>(action: ActionWithTeamFunction<T>) {
+  return async (formData: FormData): Promise<T> => {
+    const user = await getUser();
+    if (!user) {
+      redirect('/sign-in');
+    }
+
+    const team = await getTeamForUser();
+    if (!team) {
+      throw new Error('Team not found');
+    }
+
+    return action(formData, team);
+  };
+}
+```
+
+#### Usage Example
+
+```typescript
+export const someTeamAction = withTeam(async (formData, team) => {
+  // team is guaranteed to exist here
+  const memberCount = team.teamMembers.length;
+  // ... team-specific logic
+});
+```
+
+<Tip>
+  Use `withTeam` when your action needs access to the full team data including members.
+</Tip>
+
+## Middleware Comparison
+
+<CodeGroup>
+```typescript validatedAction
+// No authentication required
+// Validates schema only
+export const publicAction = validatedAction(
+  schema,
+  async (data, formData) => {
+    // data is validated
+    // no user context
+  }
+);
+```
+
+```typescript validatedActionWithUser
+// Requires authentication
+// Validates schema
+// Provides user context
+export const userAction = validatedActionWithUser(
+  schema,
+  async (data, formData, user) => {
+    // data is validated
+    // user is authenticated
+  }
+);
+```
+
+```typescript withTeam
+// Requires authentication
+// No schema validation
+// Provides team context
+export const teamAction = withTeam(
+  async (formData, team) => {
+    // team includes members
+    // user is authenticated
+  }
+);
+```
+</CodeGroup>
+
+## Best Practices
+
+<Warning>
+  Always use middleware wrappers for Server Actions that modify data. Never trust client-side validation alone.
+</Warning>
+
+<Tip>
+  Chain validation by using `validatedActionWithUser` for actions that need both schema validation and user context.
+</Tip>
+
+<Note>
+  Middleware runs on the server only. Client components cannot access middleware-protected data directly.
+</Note>
+
+## Session Refresh Flow
+
+The global middleware implements automatic session refresh:
+
+<Steps>
+  <Step title="Request arrives">
+    User makes a GET request to any route.
+  </Step>
+  
+  <Step title="Token verification">
+    Middleware verifies the JWT token from the session cookie.
+  </Step>
+  
+  <Step title="Token refresh">
+    If valid, a new token is created with a fresh 24-hour expiration.
+  </Step>
+  
+  <Step title="Cookie update">
+    The response includes the updated session cookie.
+  </Step>
+</Steps>
+
+This ensures users remain logged in as long as they're actively using the application.
+
+## Error Handling
+
+### Global Middleware Errors
+
+```typescript
+try {
+  const parsed = await verifyToken(sessionCookie.value);
+  // ... refresh session
+} catch (error) {
+  console.error('Error updating session:', error);
+  res.cookies.delete('session');
+  if (isProtectedRoute) {
+    return NextResponse.redirect(new URL('/sign-in', request.url));
+  }
+}
+```
+
+### Action Middleware Errors
+
+```typescript
+const result = schema.safeParse(Object.fromEntries(formData));
+if (!result.success) {
+  return { error: result.error.errors[0].message };
+}
+```
+
+<Note>
+  Validation errors are returned as part of the action state, allowing you to display them in the UI.
+</Note>
+
+## Related
+
+- [Authentication](/features/authentication) - Session management functions
+- [Teams](/features/teams) - Team context in middleware
+- [Activity Logs](/features/activity-logs) - Logging middleware-protected actions

@@ -1,0 +1,119 @@
+---
+title: "Introduction"
+description: "Learn about the Next.js SaaS Starter and how it can help you build your SaaS application faster"
+---
+
+## What is Next.js SaaS Starter?
+
+The Next.js SaaS Starter is a production-ready template for building Software-as-a-Service applications. It combines modern web technologies with essential SaaS features like authentication, billing, and team management to help you ship your product faster.
+
+This starter template is designed to be a learning resource and foundation for your next SaaS project, providing you with battle-tested patterns and integrations that you can build upon.
+
+<Note>
+  **Live Demo**: Check out the live demo at [next-saas-start.vercel.app](https://next-saas-start.vercel.app/)
+</Note>
+
+## Key Features
+
+The starter template comes with everything you need to build a modern SaaS application:
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="lock">
+    Email/password authentication with JWT tokens stored in secure HTTP-only cookies
+  </Card>
+  
+  <Card title="Stripe Integration" icon="credit-card">
+    Complete payment system with subscriptions, customer portal, and webhook handling
+  </Card>
+  
+  <Card title="Team Management" icon="users">
+    Multi-tenancy support with role-based access control (Owner and Member roles)
+  </Card>
+  
+  <Card title="Dashboard Pages" icon="chart-line">
+    Pre-built dashboard with CRUD operations for users and teams
+  </Card>
+  
+  <Card title="Activity Logging" icon="clock">
+    Built-in activity logging system to track user events and actions
+  </Card>
+  
+  <Card title="Middleware Protection" icon="shield">
+    Global and local middleware for route protection and schema validation
+  </Card>
+</CardGroup>
+
+### Additional Features
+
+- **Marketing Pages**: Landing page with animated Terminal element and pricing page that connects to Stripe Checkout
+- **shadcn/ui Components**: Beautiful, accessible UI components built with Radix UI and Tailwind CSS
+- **Database ORM**: Type-safe database queries with Drizzle ORM
+- **TypeScript**: Full TypeScript support for type safety across your application
+
+## Tech Stack
+
+The starter is built with modern, production-ready technologies:
+
+<CodeGroup>
+```json package.json
+{
+  "dependencies": {
+    "next": "15.6.0-canary.59",
+    "react": "19.1.0",
+    "drizzle-orm": "^0.43.1",
+    "postgres": "^3.4.5",
+    "stripe": "^18.1.0",
+    "jose": "^6.0.11",
+    "zod": "^3.24.4"
+  }
+}
+```
+</CodeGroup>
+
+### Core Technologies
+
+- **[Next.js](https://nextjs.org/)** - React framework with App Router and Server Components
+- **[PostgreSQL](https://www.postgresql.org/)** - Powerful, open-source relational database
+- **[Drizzle ORM](https://orm.drizzle.team/)** - TypeScript ORM for type-safe database queries
+- **[Stripe](https://stripe.com/)** - Complete payment infrastructure for subscriptions
+- **[shadcn/ui](https://ui.shadcn.com/)** - Beautiful UI components built with Radix UI and Tailwind CSS
+
+## Why Use This Starter?
+
+Building a SaaS application from scratch involves solving many complex problems:
+
+- Setting up secure authentication flows
+- Integrating payment systems correctly
+- Managing multi-tenant architecture
+- Implementing role-based access control
+- Handling webhook events reliably
+- Creating responsive, accessible UI components
+
+This starter template solves these problems for you, so you can focus on building your unique product features instead of reinventing the wheel.
+
+<Tip>
+  The template is intentionally minimal and designed as a learning resource. It provides a solid foundation without overwhelming you with unnecessary features.
+</Tip>
+
+## What You'll Build With
+
+The starter template includes:
+
+- **Authentication System**: Complete sign-up, sign-in, and session management
+- **Billing Integration**: Stripe subscriptions with checkout and customer portal
+- **Team Workspaces**: Multi-user teams with role-based permissions
+- **Database Schema**: Pre-configured tables for users, teams, subscriptions, and activity logs
+- **API Routes**: Ready-to-use API endpoints for common operations
+- **Protected Routes**: Middleware-based route protection for authenticated areas
+
+## Next Steps
+
+Ready to get started? Follow our quickstart guide to set up the project locally:
+
+<Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+  Get the Next.js SaaS Starter running on your local machine in minutes
+</Card>
+
+<Note>
+  This starter is open-source and maintained by the Next.js team. Contributions and feedback are welcome on [GitHub](https://github.com/nextjs/saas-starter).
+</Note>

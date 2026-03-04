@@ -1,0 +1,147 @@
+---
+title: Deployment Overview
+description: Learn about deployment options and pre-deployment checklist for your Next.js SaaS application
+---
+
+Before deploying your Next.js SaaS Starter application to production, it's important to understand the deployment options available and ensure your application is properly configured.
+
+## Deployment Options
+
+The Next.js SaaS Starter is designed to work seamlessly with modern hosting platforms that support Next.js applications:
+
+### Vercel (Recommended)
+
+**Vercel** is the recommended deployment platform as it's built by the creators of Next.js and offers:
+
+- Zero-configuration deployments
+- Automatic HTTPS and SSL certificates
+- Global CDN and edge network
+- Automatic preview deployments for pull requests
+- Built-in environment variable management
+- Excellent Next.js optimization
+
+<Note>
+The official demo at [next-saas-start.vercel.app](https://next-saas-start.vercel.app/) is deployed on Vercel.
+</Note>
+
+### Other Platforms
+
+You can also deploy to other platforms that support Next.js:
+
+- **AWS** (using Amplify, ECS, or EC2)
+- **Google Cloud Platform** (using Cloud Run or App Engine)
+- **Azure** (using App Service)
+- **DigitalOcean** (using App Platform)
+- **Railway**
+- **Render**
+
+These platforms require more manual configuration but offer greater infrastructure control.
+
+## Pre-Deployment Checklist
+
+Before deploying your application, ensure you've completed the following steps:
+
+<Steps>
+  <Step title="Environment Variables">
+    Verify all required environment variables are configured:
+    
+    - `BASE_URL` - Your production domain
+    - `POSTGRES_URL` - Production database connection string
+    - `STRIPE_SECRET_KEY` - Production Stripe secret key
+    - `STRIPE_WEBHOOK_SECRET` - Production webhook secret
+    - `AUTH_SECRET` - Secure random string for JWT signing
+    
+    <Warning>
+    Never use development or test credentials in production. Always use production-specific API keys and secrets.
+    </Warning>
+  </Step>
+  
+  <Step title="Database Setup">
+    Ensure your production database is ready:
+    
+    - Database is created and accessible
+    - Connection string is secure (use SSL if available)
+    - Run migrations: `pnpm db:migrate`
+    - Optionally seed with initial data: `pnpm db:seed`
+  </Step>
+  
+  <Step title="Stripe Configuration">
+    Switch from test mode to production mode:
+    
+    - Use production API keys from Stripe Dashboard
+    - Create production webhook endpoint
+    - Configure webhook to listen for required events
+    - Test payment flow with real card (then refund)
+  </Step>
+  
+  <Step title="Build Verification">
+    Test the production build locally:
+    
+    ```bash
+    pnpm build
+    pnpm start
+    ```
+    
+    Verify there are no build errors or TypeScript issues.
+  </Step>
+  
+  <Step title="Security Review">
+    Review security settings:
+    
+    - JWT tokens are using secure `AUTH_SECRET`
+    - Cookies are configured with `httpOnly`, `secure`, and `sameSite` flags (middleware.ts:29-32)
+    - Protected routes are properly secured by middleware (middleware.ts:5-14)
+    - API routes validate authentication where needed
+  </Step>
+</Steps>
+
+## Environment Setup Overview
+
+### Required Environment Variables
+
+The application requires five essential environment variables to function:
+
+```bash .env
+POSTGRES_URL=postgresql://user:password@host:port/database
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+BASE_URL=https://yourdomain.com
+AUTH_SECRET=your-secure-random-string
+```
+
+<Tip>
+Generate a secure `AUTH_SECRET` using OpenSSL:
+
+```bash
+openssl rand -base64 32
+```
+</Tip>
+
+### Database Considerations
+
+- The application uses **PostgreSQL** with **Drizzle ORM**
+- Supports any PostgreSQL-compatible database (Vercel Postgres, Neon, Supabase, etc.)
+- Migrations are stored in `lib/db/migrations/`
+- Schema is defined in `lib/db/schema.ts`
+
+### Stripe Webhook Configuration
+
+The application requires a webhook endpoint to handle subscription changes:
+
+- **Endpoint URL**: `https://yourdomain.com/api/stripe/webhook`
+- **Required Events**:
+  - `customer.subscription.updated`
+  - `customer.subscription.deleted`
+
+The webhook handler is implemented in `app/api/stripe/webhook/route.ts:23-28`.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Deploy to Vercel" icon="rocket" href="/deployment/vercel">
+    Follow our step-by-step guide to deploy on Vercel
+  </Card>
+  <Card title="Production Setup" icon="shield-check" href="/deployment/production">
+    Configure production environment variables and webhooks
+  </Card>
+</CardGroup>

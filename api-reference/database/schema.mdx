@@ -1,0 +1,520 @@
+---
+title: 'Database Schema'
+description: 'Complete database schema definitions using Drizzle ORM with PostgreSQL'
+---
+
+## Overview
+
+The database schema is built with [Drizzle ORM](https://orm.drizzle.team/) and PostgreSQL. All tables are defined in `lib/db/schema.ts` with full TypeScript type inference.
+
+## Tables
+
+### users
+
+Stores user account information including authentication credentials and profile data.
+
+<ParamField path="id" type="serial" required>
+  Primary key, auto-incrementing integer
+</ParamField>
+
+<ParamField path="name" type="varchar(100)">
+  User's display name
+</ParamField>
+
+<ParamField path="email" type="varchar(255)" required>
+  User's email address. Must be unique and not null.
+</ParamField>
+
+<ParamField path="passwordHash" type="text" required>
+  Hashed password for authentication
+</ParamField>
+
+<ParamField path="role" type="varchar(20)" default="member" required>
+  User role in the system
+</ParamField>
+
+<ParamField path="createdAt" type="timestamp" default="now()" required>
+  Timestamp when the user account was created
+</ParamField>
+
+<ParamField path="updatedAt" type="timestamp" default="now()" required>
+  Timestamp when the user account was last updated
+</ParamField>
+
+<ParamField path="deletedAt" type="timestamp">
+  Soft delete timestamp. Null if account is active.
+</ParamField>
+
+```typescript
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 100 }),
+  email: varchar('email', { length: 255 }).notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  role: varchar('role', { length: 20 }).notNull().default('member'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at'),
+});
+```
+
+### teams
+
+Stores team/organization information including Stripe subscription data.
+
+<ParamField path="id" type="serial" required>
+  Primary key, auto-incrementing integer
+</ParamField>
+
+<ParamField path="name" type="varchar(100)" required>
+  Team name
+</ParamField>
+
+<ParamField path="createdAt" type="timestamp" default="now()" required>
+  Timestamp when the team was created
+</ParamField>
+
+<ParamField path="updatedAt" type="timestamp" default="now()" required>
+  Timestamp when the team was last updated
+</ParamField>
+
+<ParamField path="stripeCustomerId" type="text">
+  Stripe customer ID. Must be unique if set.
+</ParamField>
+
+<ParamField path="stripeSubscriptionId" type="text">
+  Stripe subscription ID. Must be unique if set.
+</ParamField>
+
+<ParamField path="stripeProductId" type="text">
+  Stripe product ID for the current subscription
+</ParamField>
+
+<ParamField path="planName" type="varchar(50)">
+  Name of the current subscription plan
+</ParamField>
+
+<ParamField path="subscriptionStatus" type="varchar(20)">
+  Current status of the subscription (e.g., 'active', 'canceled', 'past_due')
+</ParamField>
+
+```typescript
+export const teams = pgTable('teams', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 100 }).notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  stripeCustomerId: text('stripe_customer_id').unique(),
+  stripeSubscriptionId: text('stripe_subscription_id').unique(),
+  stripeProductId: text('stripe_product_id'),
+  planName: varchar('plan_name', { length: 50 }),
+  subscriptionStatus: varchar('subscription_status', { length: 20 }),
+});
+```
+
+### teamMembers
+
+Junction table linking users to teams with role information.
+
+<ParamField path="id" type="serial" required>
+  Primary key, auto-incrementing integer
+</ParamField>
+
+<ParamField path="userId" type="integer" required>
+  Foreign key reference to `users.id`
+</ParamField>
+
+<ParamField path="teamId" type="integer" required>
+  Foreign key reference to `teams.id`
+</ParamField>
+
+<ParamField path="role" type="varchar(50)" required>
+  User's role within the team
+</ParamField>
+
+<ParamField path="joinedAt" type="timestamp" default="now()" required>
+  Timestamp when the user joined the team
+</ParamField>
+
+```typescript
+export const teamMembers = pgTable('team_members', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id),
+  teamId: integer('team_id')
+    .notNull()
+    .references(() => teams.id),
+  role: varchar('role', { length: 50 }).notNull(),
+  joinedAt: timestamp('joined_at').notNull().defaultNow(),
+});
+```
+
+### activityLogs
+
+Audit log tracking user and team activities.
+
+<ParamField path="id" type="serial" required>
+  Primary key, auto-incrementing integer
+</ParamField>
+
+<ParamField path="teamId" type="integer" required>
+  Foreign key reference to `teams.id`
+</ParamField>
+
+<ParamField path="userId" type="integer">
+  Foreign key reference to `users.id`. Nullable for system actions.
+</ParamField>
+
+<ParamField path="action" type="text" required>
+  Description of the action performed (see ActivityType enum)
+</ParamField>
+
+<ParamField path="timestamp" type="timestamp" default="now()" required>
+  Timestamp when the action occurred
+</ParamField>
+
+<ParamField path="ipAddress" type="varchar(45)">
+  IP address from which the action was performed (supports IPv4 and IPv6)
+</ParamField>
+
+```typescript
+export const activityLogs = pgTable('activity_logs', {
+  id: serial('id').primaryKey(),
+  teamId: integer('team_id')
+    .notNull()
+    .references(() => teams.id),
+  userId: integer('user_id').references(() => users.id),
+  action: text('action').notNull(),
+  timestamp: timestamp('timestamp').notNull().defaultNow(),
+  ipAddress: varchar('ip_address', { length: 45 }),
+});
+```
+
+### invitations
+
+Stores pending team invitations.
+
+<ParamField path="id" type="serial" required>
+  Primary key, auto-incrementing integer
+</ParamField>
+
+<ParamField path="teamId" type="integer" required>
+  Foreign key reference to `teams.id`
+</ParamField>
+
+<ParamField path="email" type="varchar(255)" required>
+  Email address of the invited user
+</ParamField>
+
+<ParamField path="role" type="varchar(50)" required>
+  Role the invited user will have upon accepting
+</ParamField>
+
+<ParamField path="invitedBy" type="integer" required>
+  Foreign key reference to `users.id` of the user who sent the invitation
+</ParamField>
+
+<ParamField path="invitedAt" type="timestamp" default="now()" required>
+  Timestamp when the invitation was sent
+</ParamField>
+
+<ParamField path="status" type="varchar(20)" default="pending" required>
+  Invitation status (e.g., 'pending', 'accepted', 'declined')
+</ParamField>
+
+```typescript
+export const invitations = pgTable('invitations', {
+  id: serial('id').primaryKey(),
+  teamId: integer('team_id')
+    .notNull()
+    .references(() => teams.id),
+  email: varchar('email', { length: 255 }).notNull(),
+  role: varchar('role', { length: 50 }).notNull(),
+  invitedBy: integer('invited_by')
+    .notNull()
+    .references(() => users.id),
+  invitedAt: timestamp('invited_at').notNull().defaultNow(),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+});
+```
+
+## TypeScript Types
+
+### Select Types
+
+Inferred types for reading from the database.
+
+<ResponseField name="User" type="object">
+  Inferred from `users` table using `$inferSelect`
+  
+  <Expandable title="fields">
+    <ResponseField name="id" type="number" />
+    <ResponseField name="name" type="string | null" />
+    <ResponseField name="email" type="string" />
+    <ResponseField name="passwordHash" type="string" />
+    <ResponseField name="role" type="string" />
+    <ResponseField name="createdAt" type="Date" />
+    <ResponseField name="updatedAt" type="Date" />
+    <ResponseField name="deletedAt" type="Date | null" />
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="Team" type="object">
+  Inferred from `teams` table using `$inferSelect`
+  
+  <Expandable title="fields">
+    <ResponseField name="id" type="number" />
+    <ResponseField name="name" type="string" />
+    <ResponseField name="createdAt" type="Date" />
+    <ResponseField name="updatedAt" type="Date" />
+    <ResponseField name="stripeCustomerId" type="string | null" />
+    <ResponseField name="stripeSubscriptionId" type="string | null" />
+    <ResponseField name="stripeProductId" type="string | null" />
+    <ResponseField name="planName" type="string | null" />
+    <ResponseField name="subscriptionStatus" type="string | null" />
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="TeamMember" type="object">
+  Inferred from `teamMembers` table using `$inferSelect`
+  
+  <Expandable title="fields">
+    <ResponseField name="id" type="number" />
+    <ResponseField name="userId" type="number" />
+    <ResponseField name="teamId" type="number" />
+    <ResponseField name="role" type="string" />
+    <ResponseField name="joinedAt" type="Date" />
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="ActivityLog" type="object">
+  Inferred from `activityLogs` table using `$inferSelect`
+  
+  <Expandable title="fields">
+    <ResponseField name="id" type="number" />
+    <ResponseField name="teamId" type="number" />
+    <ResponseField name="userId" type="number | null" />
+    <ResponseField name="action" type="string" />
+    <ResponseField name="timestamp" type="Date" />
+    <ResponseField name="ipAddress" type="string | null" />
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="Invitation" type="object">
+  Inferred from `invitations` table using `$inferSelect`
+  
+  <Expandable title="fields">
+    <ResponseField name="id" type="number" />
+    <ResponseField name="teamId" type="number" />
+    <ResponseField name="email" type="string" />
+    <ResponseField name="role" type="string" />
+    <ResponseField name="invitedBy" type="number" />
+    <ResponseField name="invitedAt" type="Date" />
+    <ResponseField name="status" type="string" />
+  </Expandable>
+</ResponseField>
+
+```typescript
+export type User = typeof users.$inferSelect;
+export type Team = typeof teams.$inferSelect;
+export type TeamMember = typeof teamMembers.$inferSelect;
+export type ActivityLog = typeof activityLogs.$inferSelect;
+export type Invitation = typeof invitations.$inferSelect;
+```
+
+### Insert Types
+
+Inferred types for inserting into the database.
+
+<ResponseField name="NewUser" type="object">
+  Inferred from `users` table using `$inferInsert`. Auto-generated fields are optional.
+</ResponseField>
+
+<ResponseField name="NewTeam" type="object">
+  Inferred from `teams` table using `$inferInsert`. Auto-generated fields are optional.
+</ResponseField>
+
+<ResponseField name="NewTeamMember" type="object">
+  Inferred from `teamMembers` table using `$inferInsert`. Auto-generated fields are optional.
+</ResponseField>
+
+<ResponseField name="NewActivityLog" type="object">
+  Inferred from `activityLogs` table using `$inferInsert`. Auto-generated fields are optional.
+</ResponseField>
+
+<ResponseField name="NewInvitation" type="object">
+  Inferred from `invitations` table using `$inferInsert`. Auto-generated fields are optional.
+</ResponseField>
+
+```typescript
+export type NewUser = typeof users.$inferInsert;
+export type NewTeam = typeof teams.$inferInsert;
+export type NewTeamMember = typeof teamMembers.$inferInsert;
+export type NewActivityLog = typeof activityLogs.$inferInsert;
+export type NewInvitation = typeof invitations.$inferInsert;
+```
+
+### Composite Types
+
+<ResponseField name="TeamDataWithMembers" type="object">
+  Extended team type with nested member data
+  
+  <Expandable title="structure">
+    <ResponseField name="...Team" type="Team">
+      All fields from the Team type
+    </ResponseField>
+    <ResponseField name="teamMembers" type="array">
+      Array of team members with user information
+      <Expandable title="item structure">
+        <ResponseField name="...TeamMember" type="TeamMember">
+          All fields from the TeamMember type
+        </ResponseField>
+        <ResponseField name="user" type="object">
+          <Expandable title="fields">
+            <ResponseField name="id" type="number" />
+            <ResponseField name="name" type="string | null" />
+            <ResponseField name="email" type="string" />
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+```typescript
+export type TeamDataWithMembers = Team & {
+  teamMembers: (TeamMember & {
+    user: Pick<User, 'id' | 'name' | 'email'>;
+  })[];
+};
+```
+
+## Enums
+
+### ActivityType
+
+Defines the possible activity types for audit logging.
+
+<ParamField path="SIGN_UP" type="string">
+  User account creation
+</ParamField>
+
+<ParamField path="SIGN_IN" type="string">
+  User authentication
+</ParamField>
+
+<ParamField path="SIGN_OUT" type="string">
+  User logout
+</ParamField>
+
+<ParamField path="UPDATE_PASSWORD" type="string">
+  Password change
+</ParamField>
+
+<ParamField path="DELETE_ACCOUNT" type="string">
+  Account deletion
+</ParamField>
+
+<ParamField path="UPDATE_ACCOUNT" type="string">
+  Account information update
+</ParamField>
+
+<ParamField path="CREATE_TEAM" type="string">
+  New team creation
+</ParamField>
+
+<ParamField path="REMOVE_TEAM_MEMBER" type="string">
+  Team member removal
+</ParamField>
+
+<ParamField path="INVITE_TEAM_MEMBER" type="string">
+  Team invitation sent
+</ParamField>
+
+<ParamField path="ACCEPT_INVITATION" type="string">
+  Team invitation accepted
+</ParamField>
+
+```typescript
+export enum ActivityType {
+  SIGN_UP = 'SIGN_UP',
+  SIGN_IN = 'SIGN_IN',
+  SIGN_OUT = 'SIGN_OUT',
+  UPDATE_PASSWORD = 'UPDATE_PASSWORD',
+  DELETE_ACCOUNT = 'DELETE_ACCOUNT',
+  UPDATE_ACCOUNT = 'UPDATE_ACCOUNT',
+  CREATE_TEAM = 'CREATE_TEAM',
+  REMOVE_TEAM_MEMBER = 'REMOVE_TEAM_MEMBER',
+  INVITE_TEAM_MEMBER = 'INVITE_TEAM_MEMBER',
+  ACCEPT_INVITATION = 'ACCEPT_INVITATION',
+}
+```
+
+## Relations
+
+Drizzle ORM relations define how tables connect to each other for efficient querying.
+
+### Teams Relations
+
+```typescript
+export const teamsRelations = relations(teams, ({ many }) => ({
+  teamMembers: many(teamMembers),
+  activityLogs: many(activityLogs),
+  invitations: many(invitations),
+}));
+```
+
+### Users Relations
+
+```typescript
+export const usersRelations = relations(users, ({ many }) => ({
+  teamMembers: many(teamMembers),
+  invitationsSent: many(invitations),
+}));
+```
+
+### Team Members Relations
+
+```typescript
+export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
+  user: one(users, {
+    fields: [teamMembers.userId],
+    references: [users.id],
+  }),
+  team: one(teams, {
+    fields: [teamMembers.teamId],
+    references: [teams.id],
+  }),
+}));
+```
+
+### Invitations Relations
+
+```typescript
+export const invitationsRelations = relations(invitations, ({ one }) => ({
+  team: one(teams, {
+    fields: [invitations.teamId],
+    references: [teams.id],
+  }),
+  invitedBy: one(users, {
+    fields: [invitations.invitedBy],
+    references: [users.id],
+  }),
+}));
+```
+
+### Activity Logs Relations
+
+```typescript
+export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
+  team: one(teams, {
+    fields: [activityLogs.teamId],
+    references: [teams.id],
+  }),
+  user: one(users, {
+    fields: [activityLogs.userId],
+    references: [users.id],
+  }),
+}));
+```

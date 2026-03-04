@@ -1,0 +1,434 @@
+---
+title: 'Database Queries'
+description: 'Pre-built database query functions for common operations'
+---
+
+## Overview
+
+The `lib/db/queries.ts` file provides a collection of pre-built query functions for common database operations. These functions handle authentication checks, data fetching, and relationships.
+
+## Authentication Queries
+
+### getUser
+
+Retrieves the currently authenticated user from the session cookie.
+
+```typescript
+export async function getUser(): Promise<User | null>
+```
+
+<ResponseField name="return" type="User | null">
+  Returns the authenticated user object or null if not authenticated
+</ResponseField>
+
+**Behavior:**
+- Reads the `session` cookie from the request
+- Verifies the JWT token
+- Checks if the session has expired
+- Queries the user from the database
+- Filters out soft-deleted users (`deletedAt` is null)
+- Returns null if any validation fails
+
+**Example:**
+```typescript
+import { getUser } from '@/lib/db/queries';
+
+const user = await getUser();
+if (!user) {
+  redirect('/sign-in');
+}
+
+console.log(user.email); // user@example.com
+```
+
+**Implementation:**
+```typescript
+const user = await db
+  .select()
+  .from(users)
+  .where(and(eq(users.id, sessionData.user.id), isNull(users.deletedAt)))
+  .limit(1);
+```
+
+### getUserWithTeam
+
+Retrieves a user along with their team membership information.
+
+```typescript
+export async function getUserWithTeam(userId: number): Promise<{
+  user: User;
+  teamId: number | null;
+}>
+```
+
+<ParamField path="userId" type="number" required>
+  The ID of the user to fetch
+</ParamField>
+
+<ResponseField name="return" type="object">
+  <Expandable title="structure">
+    <ResponseField name="user" type="User">
+      Complete user object
+    </ResponseField>
+    <ResponseField name="teamId" type="number | null">
+      ID of the team the user belongs to, or null if not a member of any team
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Example:**
+```typescript
+import { getUserWithTeam } from '@/lib/db/queries';
+
+const result = await getUserWithTeam(123);
+console.log(result.user.email);
+console.log(result.teamId); // 456 or null
+```
+
+**Implementation:**
+```typescript
+const result = await db
+  .select({
+    user: users,
+    teamId: teamMembers.teamId
+  })
+  .from(users)
+  .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
+  .where(eq(users.id, userId))
+  .limit(1);
+```
+
+## Team Queries
+
+### getTeamForUser
+
+Retrieves the team for the currently authenticated user with all members included.
+
+```typescript
+export async function getTeamForUser(): Promise<TeamDataWithMembers | null>
+```
+
+<ResponseField name="return" type="TeamDataWithMembers | null">
+  Returns the team with nested member data, or null if the user has no team or is not authenticated
+</ResponseField>
+
+**Behavior:**
+- Gets the current user from the session
+- Returns null if not authenticated
+- Finds the user's team membership
+- Includes all team members with their user information (id, name, email)
+- Uses Drizzle's relational query API for efficient nested loading
+
+**Example:**
+```typescript
+import { getTeamForUser } from '@/lib/db/queries';
+
+const team = await getTeamForUser();
+if (!team) {
+  return <div>No team found</div>;
+}
+
+console.log(team.name); // "Acme Corp"
+console.log(team.planName); // "pro"
+team.teamMembers.forEach(member => {
+  console.log(member.user.email, member.role);
+});
+```
+
+**Implementation:**
+```typescript
+const result = await db.query.teamMembers.findFirst({
+  where: eq(teamMembers.userId, user.id),
+  with: {
+    team: {
+      with: {
+        teamMembers: {
+          with: {
+            user: {
+              columns: {
+                id: true,
+                name: true,
+                email: true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+});
+```
+
+### getTeamByStripeCustomerId
+
+Looks up a team by their Stripe customer ID.
+
+```typescript
+export async function getTeamByStripeCustomerId(
+  customerId: string
+): Promise<Team | null>
+```
+
+<ParamField path="customerId" type="string" required>
+  The Stripe customer ID to search for
+</ParamField>
+
+<ResponseField name="return" type="Team | null">
+  Returns the team object or null if not found
+</ResponseField>
+
+**Example:**
+```typescript
+import { getTeamByStripeCustomerId } from '@/lib/db/queries';
+
+const team = await getTeamByStripeCustomerId('cus_123456');
+if (team) {
+  console.log(team.name);
+  console.log(team.subscriptionStatus);
+}
+```
+
+**Implementation:**
+```typescript
+const result = await db
+  .select()
+  .from(teams)
+  .where(eq(teams.stripeCustomerId, customerId))
+  .limit(1);
+```
+
+### updateTeamSubscription
+
+Updates a team's Stripe subscription information.
+
+```typescript
+export async function updateTeamSubscription(
+  teamId: number,
+  subscriptionData: {
+    stripeSubscriptionId: string | null;
+    stripeProductId: string | null;
+    planName: string | null;
+    subscriptionStatus: string;
+  }
+): Promise<void>
+```
+
+<ParamField path="teamId" type="number" required>
+  The ID of the team to update
+</ParamField>
+
+<ParamField path="subscriptionData" type="object" required>
+  Subscription information to update
+  
+  <Expandable title="fields">
+    <ParamField path="stripeSubscriptionId" type="string | null" required>
+      Stripe subscription ID
+    </ParamField>
+    <ParamField path="stripeProductId" type="string | null" required>
+      Stripe product ID
+    </ParamField>
+    <ParamField path="planName" type="string | null" required>
+      Human-readable plan name (e.g., "pro", "enterprise")
+    </ParamField>
+    <ParamField path="subscriptionStatus" type="string" required>
+      Subscription status (e.g., "active", "canceled", "past_due")
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Behavior:**
+- Updates the team's subscription fields
+- Automatically sets `updatedAt` to the current timestamp
+- Does not return any value
+
+**Example:**
+```typescript
+import { updateTeamSubscription } from '@/lib/db/queries';
+
+await updateTeamSubscription(123, {
+  stripeSubscriptionId: 'sub_123456',
+  stripeProductId: 'prod_123456',
+  planName: 'pro',
+  subscriptionStatus: 'active'
+});
+```
+
+**Implementation:**
+```typescript
+await db
+  .update(teams)
+  .set({
+    ...subscriptionData,
+    updatedAt: new Date()
+  })
+  .where(eq(teams.id, teamId));
+```
+
+## Activity Log Queries
+
+### getActivityLogs
+
+Retrieves the 10 most recent activity logs for the currently authenticated user.
+
+```typescript
+export async function getActivityLogs(): Promise<Array<{
+  id: number;
+  action: string;
+  timestamp: Date;
+  ipAddress: string | null;
+  userName: string | null;
+}>>
+```
+
+<ResponseField name="return" type="array">
+  Array of activity log entries (maximum 10, ordered by most recent first)
+  
+  <Expandable title="item structure">
+    <ResponseField name="id" type="number">
+      Activity log ID
+    </ResponseField>
+    <ResponseField name="action" type="string">
+      The action performed (see ActivityType enum)
+    </ResponseField>
+    <ResponseField name="timestamp" type="Date">
+      When the action occurred
+    </ResponseField>
+    <ResponseField name="ipAddress" type="string | null">
+      IP address from which the action was performed
+    </ResponseField>
+    <ResponseField name="userName" type="string | null">
+      Name of the user who performed the action
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Behavior:**
+- Requires authentication (throws error if not authenticated)
+- Joins with the users table to include user names
+- Filters to only the current user's activities
+- Orders by timestamp descending (newest first)
+- Limits to 10 results
+
+**Example:**
+```typescript
+import { getActivityLogs } from '@/lib/db/queries';
+
+try {
+  const logs = await getActivityLogs();
+  logs.forEach(log => {
+    console.log(`${log.userName} performed ${log.action} at ${log.timestamp}`);
+  });
+} catch (error) {
+  console.error('User not authenticated');
+}
+```
+
+**Implementation:**
+```typescript
+return await db
+  .select({
+    id: activityLogs.id,
+    action: activityLogs.action,
+    timestamp: activityLogs.timestamp,
+    ipAddress: activityLogs.ipAddress,
+    userName: users.name
+  })
+  .from(activityLogs)
+  .leftJoin(users, eq(activityLogs.userId, users.id))
+  .where(eq(activityLogs.userId, user.id))
+  .orderBy(desc(activityLogs.timestamp))
+  .limit(10);
+```
+
+## Usage Patterns
+
+### Server Components
+
+All query functions are async and designed for Next.js Server Components:
+
+```typescript
+import { getUser, getTeamForUser } from '@/lib/db/queries';
+
+export default async function DashboardPage() {
+  const user = await getUser();
+  if (!user) {
+    redirect('/sign-in');
+  }
+
+  const team = await getTeamForUser();
+  
+  return (
+    <div>
+      <h1>Welcome, {user.name}</h1>
+      {team && <p>Team: {team.name}</p>}
+    </div>
+  );
+}
+```
+
+### Server Actions
+
+Query functions can be used in Server Actions for data mutations:
+
+```typescript
+'use server';
+
+import { getUser } from '@/lib/db/queries';
+import { db } from '@/lib/db/drizzle';
+import { teams } from '@/lib/db/schema';
+
+export async function updateTeamName(teamId: number, name: string) {
+  const user = await getUser();
+  if (!user) {
+    throw new Error('Unauthorized');
+  }
+
+  await db
+    .update(teams)
+    .set({ name, updatedAt: new Date() })
+    .where(eq(teams.id, teamId));
+}
+```
+
+### API Routes
+
+Query functions work in API route handlers:
+
+```typescript
+import { getUser } from '@/lib/db/queries';
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  const user = await getUser();
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  return NextResponse.json({ user });
+}
+```
+
+### Webhook Handlers
+
+Stripe webhook integration example:
+
+```typescript
+import { getTeamByStripeCustomerId, updateTeamSubscription } from '@/lib/db/queries';
+import Stripe from 'stripe';
+
+export async function handleSubscriptionUpdate(event: Stripe.Event) {
+  const subscription = event.data.object as Stripe.Subscription;
+  
+  const team = await getTeamByStripeCustomerId(subscription.customer as string);
+  if (!team) {
+    throw new Error('Team not found');
+  }
+
+  await updateTeamSubscription(team.id, {
+    stripeSubscriptionId: subscription.id,
+    stripeProductId: subscription.items.data[0].price.product as string,
+    planName: 'pro',
+    subscriptionStatus: subscription.status
+  });
+}
+```

@@ -1,0 +1,300 @@
+---
+title: Deploy to Vercel
+description: Step-by-step guide to deploying your Next.js SaaS application on Vercel
+---
+
+Vercel is the recommended platform for deploying your Next.js SaaS Starter. This guide will walk you through the complete deployment process.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- A [GitHub](https://github.com), [GitLab](https://gitlab.com), or [Bitbucket](https://bitbucket.org) account
+- Your code pushed to a Git repository
+- A [Vercel](https://vercel.com) account (free tier is sufficient to start)
+- Production Stripe API keys
+- A production PostgreSQL database (see [database options](#database-options))
+
+## Deployment Steps
+
+<Steps>
+  <Step title="Push Code to Git Repository">
+    If you haven't already, push your code to a Git repository:
+    
+    ```bash
+    git add .
+    git commit -m "Initial commit"
+    git push origin main
+    ```
+  </Step>
+  
+  <Step title="Connect Repository to Vercel">
+    1. Go to [vercel.com](https://vercel.com/) and sign in
+    2. Click **Add New** → **Project**
+    3. Import your Git repository
+    4. Vercel will automatically detect Next.js and configure build settings
+    
+    <Note>
+    Vercel automatically detects the following:
+    - Framework: Next.js
+    - Build Command: `pnpm build`
+    - Output Directory: `.next`
+    - Install Command: `pnpm install`
+    </Note>
+  </Step>
+  
+  <Step title="Configure Environment Variables">
+    Before deploying, add all required environment variables in the Vercel dashboard:
+    
+    1. Click **Environment Variables** in the project settings
+    2. Add each variable:
+    
+    | Variable | Value | Notes |
+    |----------|-------|-------|
+    | `BASE_URL` | `https://your-domain.vercel.app` | Your production domain |
+    | `POSTGRES_URL` | `postgresql://...` | Production database connection string |
+    | `STRIPE_SECRET_KEY` | `sk_live_...` | Production Stripe secret key |
+    | `STRIPE_WEBHOOK_SECRET` | `whsec_...` | Leave empty for now, add after webhook creation |
+    | `AUTH_SECRET` | Generated string | Run `openssl rand -base64 32` to generate |
+    
+    <Warning>
+    Use production Stripe keys (`sk_live_...`), not test keys (`sk_test_...`). Find your production keys at [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys).
+    </Warning>
+  </Step>
+  
+  <Step title="Deploy">
+    Click **Deploy** to start your first deployment.
+    
+    Vercel will:
+    1. Clone your repository
+    2. Install dependencies with `pnpm install`
+    3. Build your application with `pnpm build`
+    4. Deploy to their global edge network
+    
+    The initial deployment typically takes 1-2 minutes.
+  </Step>
+  
+  <Step title="Run Database Migrations">
+    After your first deployment, you need to run database migrations.
+    
+    **Option A: Using Vercel CLI (Recommended)**
+    
+    ```bash
+    # Install Vercel CLI
+    npm i -g vercel
+    
+    # Login to Vercel
+    vercel login
+    
+    # Link your project
+    vercel link
+    
+    # Run migrations
+    vercel env pull .env.production
+    pnpm db:migrate
+    ```
+    
+    **Option B: Manually with psql**
+    
+    Connect to your database and run the SQL migrations from `lib/db/migrations/`.
+  </Step>
+  
+  <Step title="Create Stripe Production Webhook">
+    Now that your app is deployed, create a production webhook:
+    
+    1. Go to [dashboard.stripe.com/webhooks](https://dashboard.stripe.com/webhooks)
+    2. Click **Add endpoint**
+    3. Set endpoint URL: `https://your-domain.vercel.app/api/stripe/webhook`
+    4. Select events to listen for:
+       - `customer.subscription.updated`
+       - `customer.subscription.deleted`
+    5. Click **Add endpoint**
+    6. Copy the **Signing secret** (starts with `whsec_...`)
+    
+    <Tip>
+    The webhook handler verifies signatures and processes subscription changes in `app/api/stripe/webhook/route.ts`.
+    </Tip>
+  </Step>
+  
+  <Step title="Add Webhook Secret to Vercel">
+    1. Go back to your Vercel project settings
+    2. Navigate to **Environment Variables**
+    3. Add or update `STRIPE_WEBHOOK_SECRET` with the signing secret from step 5
+    4. Redeploy your application for the change to take effect
+    
+    <Note>
+    You can trigger a redeploy by going to **Deployments** → **...** menu on latest deployment → **Redeploy**.
+    </Note>
+  </Step>
+</Steps>
+
+## Database Options
+
+You need a production PostgreSQL database. Here are recommended options:
+
+### Vercel Postgres (Recommended)
+
+**Pros:** Native Vercel integration, automatic connection pooling, serverless-optimized
+
+1. Go to your Vercel project
+2. Click **Storage** tab
+3. Click **Create Database** → **Postgres**
+4. Follow the setup wizard
+5. Vercel automatically adds `POSTGRES_URL` to your environment variables
+
+### Neon
+
+**Pros:** Serverless, automatic scaling, generous free tier
+
+1. Sign up at [neon.tech](https://neon.tech)
+2. Create a new project
+3. Copy the connection string
+4. Add to Vercel as `POSTGRES_URL`
+
+### Supabase
+
+**Pros:** Includes auth and storage, good free tier
+
+1. Sign up at [supabase.com](https://supabase.com)
+2. Create a new project
+3. Get connection string from project settings
+4. Add to Vercel as `POSTGRES_URL`
+
+<Note>
+More database options available at [vercel.com/marketplace?category=databases](https://vercel.com/marketplace?category=databases).
+</Note>
+
+## Custom Domain Configuration
+
+To use a custom domain instead of `.vercel.app`:
+
+<Steps>
+  <Step title="Add Domain to Vercel">
+    1. Go to project **Settings** → **Domains**
+    2. Enter your domain name
+    3. Click **Add**
+  </Step>
+  
+  <Step title="Configure DNS">
+    Vercel will provide DNS configuration instructions:
+    
+    - **CNAME Record**: Point to `cname.vercel-dns.com`
+    - **A Record**: Point to Vercel's IP addresses
+    
+    Add these records to your domain registrar's DNS settings.
+  </Step>
+  
+  <Step title="Update Environment Variables">
+    Update `BASE_URL` in your environment variables:
+    
+    ```bash
+    BASE_URL=https://yourdomain.com
+    ```
+    
+    Redeploy for changes to take effect.
+  </Step>
+  
+  <Step title="Update Stripe Webhook">
+    Update your Stripe webhook endpoint URL to use the custom domain:
+    
+    1. Go to [dashboard.stripe.com/webhooks](https://dashboard.stripe.com/webhooks)
+    2. Edit your webhook endpoint
+    3. Update URL to `https://yourdomain.com/api/stripe/webhook`
+  </Step>
+</Steps>
+
+<Tip>
+Vercel automatically provisions SSL certificates for all domains. HTTPS is enabled by default.
+</Tip>
+
+## Automatic Deployments
+
+Vercel automatically deploys your application when you push to your repository:
+
+- **Production Branch** (usually `main`): Deploys to production domain
+- **Other Branches**: Creates preview deployments with unique URLs
+- **Pull Requests**: Generates preview deployments for testing
+
+### Preview Deployments
+
+Every pull request gets a unique preview URL:
+
+```
+https://your-app-git-feature-branch-username.vercel.app
+```
+
+<Warning>
+Preview deployments use production environment variables. Be careful when testing payments or database operations.
+</Warning>
+
+## Monitoring and Logs
+
+### View Deployment Logs
+
+1. Go to your project dashboard
+2. Click **Deployments**
+3. Click on any deployment
+4. View build logs and runtime logs
+
+### Runtime Logs
+
+View real-time application logs:
+
+```bash
+# Using Vercel CLI
+vercel logs
+
+# Follow logs in real-time
+vercel logs --follow
+```
+
+### Error Tracking
+
+For production error tracking, consider integrating:
+
+- [Sentry](https://sentry.io)
+- [LogRocket](https://logrocket.com)
+- [Datadog](https://www.datadoghq.com)
+
+## Troubleshooting
+
+### Build Failures
+
+**Issue**: Build fails with TypeScript errors
+
+```bash
+# Run build locally to debug
+pnpm build
+```
+
+Fix any TypeScript errors before pushing.
+
+### Environment Variable Issues
+
+**Issue**: Application crashes due to missing environment variables
+
+1. Verify all five required variables are set in Vercel
+2. Check for typos in variable names
+3. Redeploy after adding variables
+
+### Database Connection Errors
+
+**Issue**: Cannot connect to database
+
+- Verify `POSTGRES_URL` format: `postgresql://user:password@host:port/database`
+- Ensure database allows connections from Vercel IPs
+- Check if connection pooling is required
+
+### Webhook Signature Verification Failed
+
+**Issue**: Stripe webhook returns 400 errors
+
+- Verify `STRIPE_WEBHOOK_SECRET` matches the webhook signing secret in Stripe Dashboard
+- Ensure you're using the production webhook secret, not test
+- Check that webhook URL exactly matches: `https://yourdomain.com/api/stripe/webhook`
+
+## Next Steps
+
+<Card title="Production Checklist" icon="list-check" href="/deployment/production">
+  Review production environment setup and security considerations
+</Card>

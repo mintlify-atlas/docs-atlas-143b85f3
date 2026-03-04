@@ -1,0 +1,371 @@
+---
+title: 'Teams'
+description: 'Multi-tenant team system with role-based access control and member management'
+---
+
+## Overview
+
+The Next.js SaaS Starter includes a complete team management system with role-based access control (RBAC), member invitations, and team hierarchy. Each user belongs to one or more teams, and teams can have multiple members with different roles.
+
+## Database Schema
+
+### Teams Table
+
+The teams table stores team information and subscription data:
+
+```typescript lib/db/schema.ts
+export const teams = pgTable('teams', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 100 }).notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  stripeCustomerId: text('stripe_customer_id').unique(),
+  stripeSubscriptionId: text('stripe_subscription_id').unique(),
+  stripeProductId: text('stripe_product_id'),
+  planName: varchar('plan_name', { length: 50 }),
+  subscriptionStatus: varchar('subscription_status', { length: 20 }),
+});
+```
+
+<Note>
+  Teams are automatically linked to Stripe customers for billing purposes. See the [Billing](/features/billing) documentation for more details.
+</Note>
+
+### Team Members Table
+
+The team members table creates the many-to-many relationship between users and teams:
+
+```typescript lib/db/schema.ts
+export const teamMembers = pgTable('team_members', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id),
+  teamId: integer('team_id')
+    .notNull()
+    .references(() => teams.id),
+  role: varchar('role', { length: 50 }).notNull(),
+  joinedAt: timestamp('joined_at').notNull().defaultNow(),
+});
+```
+
+### Invitations Table
+
+Pending team invitations are stored in the invitations table:
+
+```typescript lib/db/schema.ts
+export const invitations = pgTable('invitations', {
+  id: serial('id').primaryKey(),
+  teamId: integer('team_id')
+    .notNull()
+    .references(() => teams.id),
+  email: varchar('email', { length: 255 }).notNull(),
+  role: varchar('role', { length: 50 }).notNull(),
+  invitedBy: integer('invited_by')
+    .notNull()
+    .references(() => users.id),
+  invitedAt: timestamp('invited_at').notNull().defaultNow(),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+});
+```
+
+## Role-Based Access Control
+
+### Available Roles
+
+The system supports two primary roles:
+
+<CodeGroup>
+```typescript Owner
+{
+  role: 'owner'
+}
+```
+
+```typescript Member
+{
+  role: 'member'
+}
+```
+</CodeGroup>
+
+<Tip>
+  The role system is flexible and can be extended to support additional roles like 'admin', 'viewer', etc. by modifying the validation schemas and permissions logic.
+</Tip>
+
+## Team Operations
+
+### Creating a Team
+
+Teams are automatically created during user sign-up if no invitation exists:
+
+```typescript app/(login)/actions.ts
+const newTeam: NewTeam = {
+  name: `${email}'s Team`
+};
+
+const [createdTeam] = await db.insert(teams).values(newTeam).returning();
+
+const newTeamMember: NewTeamMember = {
+  userId: createdUser.id,
+  teamId: createdTeam.id,
+  role: 'owner'
+};
+
+await db.insert(teamMembers).values(newTeamMember);
+```
+
+### Getting Team for Current User
+
+Use `getTeamForUser()` to retrieve a user's team with all members:
+
+```typescript lib/db/queries.ts
+export async function getTeamForUser() {
+  const user = await getUser();
+  if (!user) {
+    return null;
+  }
+
+  const result = await db.query.teamMembers.findFirst({
+    where: eq(teamMembers.userId, user.id),
+    with: {
+      team: {
+        with: {
+          teamMembers: {
+            with: {
+              user: {
+                columns: {
+                  id: true,
+                  name: true,
+                  email: true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  return result?.team || null;
+}
+```
+
+This returns a `TeamDataWithMembers` object:
+
+```typescript lib/db/schema.ts
+export type TeamDataWithMembers = Team & {
+  teamMembers: (TeamMember & {
+    user: Pick<User, 'id' | 'name' | 'email'>;
+  })[];
+};
+```
+
+## Member Management
+
+### Inviting Team Members
+
+<Steps>
+  <Step title="Validate invitation">
+    Check if the user is already a team member or has a pending invitation.
+  </Step>
+  
+  <Step title="Create invitation">
+    Insert a new record into the invitations table with status 'pending'.
+  </Step>
+  
+  <Step title="Send email">
+    Send an invitation email with a sign-up link including the invitation ID.
+  </Step>
+  
+  <Step title="Log activity">
+    Record the invitation in the activity logs.
+  </Step>
+</Steps>
+
+Here's the implementation:
+
+```typescript app/(login)/actions.ts
+export const inviteTeamMember = validatedActionWithUser(
+  inviteTeamMemberSchema,
+  async (data, _, user) => {
+    const { email, role } = data;
+    const userWithTeam = await getUserWithTeam(user.id);
+
+    if (!userWithTeam?.teamId) {
+      return { error: 'User is not part of a team' };
+    }
+
+    // Check if user is already a member
+    const existingMember = await db
+      .select()
+      .from(users)
+      .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
+      .where(
+        and(eq(users.email, email), eq(teamMembers.teamId, userWithTeam.teamId))
+      )
+      .limit(1);
+
+    if (existingMember.length > 0) {
+      return { error: 'User is already a member of this team' };
+    }
+
+    // Check for existing invitation
+    const existingInvitation = await db
+      .select()
+      .from(invitations)
+      .where(
+        and(
+          eq(invitations.email, email),
+          eq(invitations.teamId, userWithTeam.teamId),
+          eq(invitations.status, 'pending')
+        )
+      )
+      .limit(1);
+
+    if (existingInvitation.length > 0) {
+      return { error: 'An invitation has already been sent to this email' };
+    }
+
+    // Create invitation
+    await db.insert(invitations).values({
+      teamId: userWithTeam.teamId,
+      email,
+      role,
+      invitedBy: user.id,
+      status: 'pending'
+    });
+
+    await logActivity(
+      userWithTeam.teamId,
+      user.id,
+      ActivityType.INVITE_TEAM_MEMBER
+    );
+
+    return { success: 'Invitation sent successfully' };
+  }
+);
+```
+
+<Warning>
+  Remember to implement email sending functionality for invitations. The sign-up URL should include the invitation ID: `/sign-up?inviteId={id}`
+</Warning>
+
+### Accepting Invitations
+
+When a user signs up with an invitation ID, they automatically join the team:
+
+```typescript app/(login)/actions.ts
+if (inviteId) {
+  const [invitation] = await db
+    .select()
+    .from(invitations)
+    .where(
+      and(
+        eq(invitations.id, parseInt(inviteId)),
+        eq(invitations.email, email),
+        eq(invitations.status, 'pending')
+      )
+    )
+    .limit(1);
+
+  if (invitation) {
+    teamId = invitation.teamId;
+    userRole = invitation.role;
+
+    await db
+      .update(invitations)
+      .set({ status: 'accepted' })
+      .where(eq(invitations.id, invitation.id));
+
+    await logActivity(teamId, createdUser.id, ActivityType.ACCEPT_INVITATION);
+  }
+}
+```
+
+### Removing Team Members
+
+Remove a team member using the `removeTeamMember` action:
+
+```typescript app/(login)/actions.ts
+export const removeTeamMember = validatedActionWithUser(
+  removeTeamMemberSchema,
+  async (data, _, user) => {
+    const { memberId } = data;
+    const userWithTeam = await getUserWithTeam(user.id);
+
+    if (!userWithTeam?.teamId) {
+      return { error: 'User is not part of a team' };
+    }
+
+    await db
+      .delete(teamMembers)
+      .where(
+        and(
+          eq(teamMembers.id, memberId),
+          eq(teamMembers.teamId, userWithTeam.teamId)
+        )
+      );
+
+    await logActivity(
+      userWithTeam.teamId,
+      user.id,
+      ActivityType.REMOVE_TEAM_MEMBER
+    );
+
+    return { success: 'Team member removed successfully' };
+  }
+);
+```
+
+## Type Definitions
+
+The schema exports several useful type definitions:
+
+```typescript lib/db/schema.ts
+export type Team = typeof teams.$inferSelect;
+export type NewTeam = typeof teams.$inferInsert;
+export type TeamMember = typeof teamMembers.$inferSelect;
+export type NewTeamMember = typeof teamMembers.$inferInsert;
+export type Invitation = typeof invitations.$inferSelect;
+export type NewInvitation = typeof invitations.$inferInsert;
+```
+
+## Middleware Integration
+
+Use the `withTeam` middleware wrapper to ensure actions have team context:
+
+```typescript lib/auth/middleware.ts
+export function withTeam<T>(action: ActionWithTeamFunction<T>) {
+  return async (formData: FormData): Promise<T> => {
+    const user = await getUser();
+    if (!user) {
+      redirect('/sign-in');
+    }
+
+    const team = await getTeamForUser();
+    if (!team) {
+      throw new Error('Team not found');
+    }
+
+    return action(formData, team);
+  };
+}
+```
+
+## Best Practices
+
+<Tip>
+  Always validate that a user has the appropriate role before allowing them to perform sensitive actions like inviting or removing team members.
+</Tip>
+
+<Note>
+  Team operations automatically log activities for audit purposes. See the [Activity Logs](/features/activity-logs) documentation for more information.
+</Note>
+
+## Related
+
+- [Authentication](/features/authentication) - User authentication system
+- [Billing](/features/billing) - Team subscription management
+- [Activity Logs](/features/activity-logs) - Tracking team activities
+- [Middleware](/features/middleware) - Server action security

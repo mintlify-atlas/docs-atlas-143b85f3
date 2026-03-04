@@ -1,0 +1,141 @@
+---
+title: 'Checkout Session'
+description: 'Create and manage Stripe checkout sessions for subscription payments'
+---
+
+## createCheckoutSession
+
+Creates a Stripe Checkout session for a team to subscribe to a pricing plan. This function automatically handles user authentication, redirects unauthenticated users to sign-up, and creates a subscription checkout session with a 14-day trial period.
+
+### Function Signature
+
+```typescript
+async function createCheckoutSession({
+  team,
+  priceId
+}: {
+  team: Team | null;
+  priceId: string;
+}): Promise<never>
+```
+
+### Parameters
+
+<ParamField path="team" type="Team | null" required>
+  The team object for which to create the checkout session. If `null`, the user will be redirected to sign-up.
+  
+  The `Team` type includes:
+  - `id`: number
+  - `name`: string
+  - `stripeCustomerId`: string | null
+  - `stripeSubscriptionId`: string | null
+  - `stripeProductId`: string | null
+  - `planName`: string | null
+  - `subscriptionStatus`: string | null
+</ParamField>
+
+<ParamField path="priceId" type="string" required>
+  The Stripe Price ID to subscribe to. This should be a valid Stripe price identifier (e.g., `price_1234567890`).
+</ParamField>
+
+### Return Value
+
+This function never returns normally as it always calls `redirect()`. It either:
+- Redirects unauthenticated users to `/sign-up?redirect=checkout&priceId={priceId}`
+- Redirects authenticated users to the Stripe Checkout session URL
+
+### Behavior
+
+1. **Authentication Check**: Retrieves the current user using `getUser()`
+2. **Validation**: If no team or user exists, redirects to sign-up with return parameters
+3. **Session Creation**: Creates a Stripe Checkout session with:
+   - Payment method: Card only
+   - Mode: Subscription
+   - Trial period: 14 days
+   - Promotion codes: Enabled
+   - Success URL: `/api/stripe/checkout?session_id={CHECKOUT_SESSION_ID}`
+   - Cancel URL: `/pricing`
+4. **Customer Association**: Links to existing Stripe customer if `team.stripeCustomerId` exists
+5. **Redirect**: Sends user to Stripe Checkout
+
+### Usage Example
+
+```typescript
+import { createCheckoutSession } from '@/lib/payments/stripe';
+import { getTeamForUser } from '@/lib/db/queries';
+
+export async function subscribeAction(formData: FormData) {
+  'use server';
+  
+  const priceId = formData.get('priceId') as string;
+  const team = await getTeamForUser();
+  
+  await createCheckoutSession({
+    team,
+    priceId
+  });
+}
+```
+
+### Server Action Example
+
+```typescript
+// app/pricing/page.tsx
+import { createCheckoutSession } from '@/lib/payments/stripe';
+import { getTeamForUser } from '@/lib/db/queries';
+
+export default function PricingPage() {
+  async function handleCheckout(priceId: string) {
+    'use server';
+    const team = await getTeamForUser();
+    await createCheckoutSession({ team, priceId });
+  }
+  
+  return (
+    <form action={() => handleCheckout('price_1234567890')}>
+      <button type="submit">Subscribe</button>
+    </form>
+  );
+}
+```
+
+### Checkout Session Configuration
+
+The function creates a Stripe Checkout session with the following configuration:
+
+<ResponseField name="payment_method_types" type="string[]">
+  Set to `['card']` - only card payments are accepted
+</ResponseField>
+
+<ResponseField name="mode" type="string">
+  Set to `'subscription'` for recurring billing
+</ResponseField>
+
+<ResponseField name="subscription_data.trial_period_days" type="number">
+  Set to `14` - provides a 14-day free trial for all subscriptions
+</ResponseField>
+
+<ResponseField name="allow_promotion_codes" type="boolean">
+  Set to `true` - allows customers to enter discount codes at checkout
+</ResponseField>
+
+<ResponseField name="client_reference_id" type="string">
+  Set to the user's ID for tracking the subscription origin
+</ResponseField>
+
+### Environment Variables Required
+
+- `STRIPE_SECRET_KEY`: Your Stripe secret API key
+- `BASE_URL`: Your application's base URL for success/cancel redirects
+
+### Error Handling
+
+This function handles errors through redirects:
+- Missing team or user: Redirects to sign-up page
+- Stripe API errors: Will throw and should be caught by error boundaries
+
+### Related Functions
+
+- `createCustomerPortalSession()` - Manage existing subscriptions
+- `handleSubscriptionChange()` - Process webhook events
+- `getStripePrices()` - Fetch available pricing plans

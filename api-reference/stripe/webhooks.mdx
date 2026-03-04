@@ -1,0 +1,320 @@
+---
+title: 'Webhooks'
+description: 'Handle Stripe webhook events for subscription management'
+---
+
+## Webhook Handler
+
+The Stripe webhook handler processes subscription-related events from Stripe and keeps your database in sync with subscription changes. The webhook endpoint is located at `/api/stripe/webhook` and handles webhook signature verification and event routing.
+
+### Endpoint
+
+```
+POST /api/stripe/webhook
+```
+
+### Implementation
+
+The webhook route handler is implemented in `app/api/stripe/webhook/route.ts` and processes incoming Stripe events.
+
+### Webhook Handler Function
+
+```typescript
+export async function POST(request: NextRequest): Promise<NextResponse>
+```
+
+### Request Processing
+
+<ParamField path="request" type="NextRequest" required>
+  The Next.js request object containing:
+  - **Body**: Raw webhook payload from Stripe
+  - **Headers**: Must include `stripe-signature` header for verification
+</ParamField>
+
+### Response
+
+<ResponseField name="success" type="NextResponse">
+  Returns `{ received: true }` with status 200 when event is processed successfully
+</ResponseField>
+
+<ResponseField name="error" type="NextResponse">
+  Returns `{ error: 'Webhook signature verification failed.' }` with status 400 when signature verification fails
+</ResponseField>
+
+### Webhook Verification
+
+The handler verifies webhook signatures to ensure events are from Stripe:
+
+```typescript
+const payload = await request.text();
+const signature = request.headers.get('stripe-signature') as string;
+
+try {
+  event = stripe.webhooks.constructEvent(payload, signature, webhookSecret);
+} catch (err) {
+  console.error('Webhook signature verification failed.', err);
+  return NextResponse.json(
+    { error: 'Webhook signature verification failed.' },
+    { status: 400 }
+  );
+}
+```
+
+### Handled Events
+
+The webhook handler processes the following Stripe events:
+
+<ParamField path="customer.subscription.updated" type="Stripe.Event">
+  Triggered when a subscription is modified:
+  - Plan changes (upgrades/downgrades)
+  - Status changes (active, trialing, past_due, etc.)
+  - Payment method updates
+  - Subscription renewals
+</ParamField>
+
+<ParamField path="customer.subscription.deleted" type="Stripe.Event">
+  Triggered when a subscription is canceled or deleted:
+  - Customer cancels subscription
+  - Subscription expires after failed payments
+  - Admin cancels subscription in Stripe Dashboard
+</ParamField>
+
+### Event Routing
+
+```typescript
+switch (event.type) {
+  case 'customer.subscription.updated':
+  case 'customer.subscription.deleted':
+    const subscription = event.data.object as Stripe.Subscription;
+    await handleSubscriptionChange(subscription);
+    break;
+  default:
+    console.log(`Unhandled event type ${event.type}`);
+}
+```
+
+## handleSubscriptionChange
+
+Processes subscription changes and updates the team's subscription data in the database.
+
+### Function Signature
+
+```typescript
+async function handleSubscriptionChange(
+  subscription: Stripe.Subscription
+): Promise<void>
+```
+
+### Parameters
+
+<ParamField path="subscription" type="Stripe.Subscription" required>
+  The Stripe subscription object from the webhook event. Contains:
+  - `id`: The subscription ID
+  - `customer`: The Stripe customer ID
+  - `status`: Current subscription status
+  - `items.data`: Array of subscription line items with plan details
+</ParamField>
+
+### Behavior
+
+1. **Extract Data**: Gets customer ID, subscription ID, and status from the subscription object
+2. **Find Team**: Looks up the team by `stripeCustomerId`
+3. **Validation**: Logs error and returns if team is not found
+4. **Status Handling**:
+   - **Active/Trialing**: Updates team with subscription details
+   - **Canceled/Unpaid**: Clears subscription data from team
+
+### Subscription Status Handling
+
+<ParamField path="active" type="status">
+  Subscription is active and paid:
+  - Updates `stripeSubscriptionId`
+  - Updates `stripeProductId`
+  - Updates `planName` from product name
+  - Sets `subscriptionStatus` to `'active'`
+</ParamField>
+
+<ParamField path="trialing" type="status">
+  Subscription is in trial period:
+  - Updates `stripeSubscriptionId`
+  - Updates `stripeProductId`
+  - Updates `planName` from product name
+  - Sets `subscriptionStatus` to `'trialing'`
+</ParamField>
+
+<ParamField path="canceled" type="status">
+  Subscription has been canceled:
+  - Clears `stripeSubscriptionId` (set to null)
+  - Clears `stripeProductId` (set to null)
+  - Clears `planName` (set to null)
+  - Sets `subscriptionStatus` to `'canceled'`
+</ParamField>
+
+<ParamField path="unpaid" type="status">
+  Subscription payment failed:
+  - Clears `stripeSubscriptionId` (set to null)
+  - Clears `stripeProductId` (set to null)
+  - Clears `planName` (set to null)
+  - Sets `subscriptionStatus` to `'unpaid'`
+</ParamField>
+
+### Implementation Details
+
+```typescript
+export async function handleSubscriptionChange(
+  subscription: Stripe.Subscription
+) {
+  const customerId = subscription.customer as string;
+  const subscriptionId = subscription.id;
+  const status = subscription.status;
+
+  const team = await getTeamByStripeCustomerId(customerId);
+
+  if (!team) {
+    console.error('Team not found for Stripe customer:', customerId);
+    return;
+  }
+
+  if (status === 'active' || status === 'trialing') {
+    const plan = subscription.items.data[0]?.plan;
+    await updateTeamSubscription(team.id, {
+      stripeSubscriptionId: subscriptionId,
+      stripeProductId: plan?.product as string,
+      planName: (plan?.product as Stripe.Product).name,
+      subscriptionStatus: status
+    });
+  } else if (status === 'canceled' || status === 'unpaid') {
+    await updateTeamSubscription(team.id, {
+      stripeSubscriptionId: null,
+      stripeProductId: null,
+      planName: null,
+      subscriptionStatus: status
+    });
+  }
+}
+```
+
+### Database Updates
+
+The function calls `updateTeamSubscription()` which updates the following fields in the `teams` table:
+
+- `stripeSubscriptionId`: The Stripe subscription ID or null
+- `stripeProductId`: The Stripe product ID or null
+- `planName`: The human-readable plan name or null
+- `subscriptionStatus`: The current subscription status
+
+### Usage Example
+
+This function is typically only called by the webhook handler, but can be used manually if needed:
+
+```typescript
+import { handleSubscriptionChange } from '@/lib/payments/stripe';
+import { stripe } from '@/lib/payments/stripe';
+
+// Manually sync a subscription
+const subscription = await stripe.subscriptions.retrieve('sub_1234567890');
+await handleSubscriptionChange(subscription);
+```
+
+### Setting Up Webhooks
+
+1. **Create Webhook Endpoint in Stripe Dashboard**:
+   - Go to Developers > Webhooks
+   - Click "Add endpoint"
+   - URL: `https://yourdomain.com/api/stripe/webhook`
+   - Events to send:
+     - `customer.subscription.updated`
+     - `customer.subscription.deleted`
+
+2. **Get Webhook Secret**:
+   - Copy the webhook signing secret from the Stripe Dashboard
+   - Add to your environment variables as `STRIPE_WEBHOOK_SECRET`
+
+3. **Test Webhook**:
+   ```bash
+   stripe listen --forward-to localhost:3000/api/stripe/webhook
+   ```
+
+### Environment Variables Required
+
+<ParamField path="STRIPE_SECRET_KEY" type="string" required>
+  Your Stripe secret API key for authentication
+</ParamField>
+
+<ParamField path="STRIPE_WEBHOOK_SECRET" type="string" required>
+  The webhook signing secret from your Stripe webhook endpoint configuration
+</ParamField>
+
+### Error Handling
+
+The webhook handler includes several error handling mechanisms:
+
+1. **Signature Verification Failure**:
+   - Returns 400 status code
+   - Logs error message
+   - Does not process the event
+
+2. **Team Not Found**:
+   - Logs error with customer ID
+   - Returns successfully to prevent Stripe retries
+   - Does not update database
+
+3. **Unhandled Event Types**:
+   - Logs event type
+   - Returns success to prevent retries
+   - No action taken
+
+### Testing Webhooks Locally
+
+Use the Stripe CLI to test webhooks during development:
+
+```bash
+# Install Stripe CLI
+brew install stripe/stripe-cli/stripe
+
+# Login to Stripe
+stripe login
+
+# Forward webhooks to local server
+stripe listen --forward-to localhost:3000/api/stripe/webhook
+
+# Trigger test events
+stripe trigger customer.subscription.updated
+stripe trigger customer.subscription.deleted
+```
+
+### Webhook Security Best Practices
+
+1. **Always Verify Signatures**: Never process events without signature verification
+2. **Use HTTPS**: Webhook endpoints must use HTTPS in production
+3. **Return 200 Quickly**: Process events asynchronously if they take time
+4. **Handle Duplicates**: Events may be sent multiple times
+5. **Log Everything**: Keep detailed logs for debugging
+
+### Monitoring
+
+Monitor webhook health in the Stripe Dashboard:
+
+- View webhook attempts and responses
+- Check for failed deliveries
+- Review error rates
+- Resend failed events if needed
+
+### Subscription Statuses
+
+Stripe subscriptions can have the following statuses:
+
+- `active`: Subscription is active and paid
+- `trialing`: In trial period (14 days in this implementation)
+- `past_due`: Payment failed but subscription still active
+- `unpaid`: Payment failed and subscription deactivated
+- `canceled`: Subscription has been canceled
+- `incomplete`: Initial payment pending
+- `incomplete_expired`: Initial payment failed
+
+### Related Functions
+
+- `createCheckoutSession()` - Create new subscriptions that trigger webhooks
+- `createCustomerPortalSession()` - Allow customers to manage subscriptions
+- `getTeamByStripeCustomerId()` - Database query used by webhook handler
+- `updateTeamSubscription()` - Database update used by webhook handler

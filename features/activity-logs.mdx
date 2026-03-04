@@ -1,0 +1,358 @@
+---
+title: 'Activity Logs'
+description: 'Comprehensive activity logging system for tracking user and team actions'
+---
+
+## Overview
+
+The Next.js SaaS Starter includes a built-in activity logging system that tracks important user and team actions. This provides an audit trail for security, debugging, and analytics purposes.
+
+## Database Schema
+
+### Activity Logs Table
+
+Activity logs are stored in the `activityLogs` table:
+
+```typescript lib/db/schema.ts
+export const activityLogs = pgTable('activity_logs', {
+  id: serial('id').primaryKey(),
+  teamId: integer('team_id')
+    .notNull()
+    .references(() => teams.id),
+  userId: integer('user_id').references(() => users.id),
+  action: text('action').notNull(),
+  timestamp: timestamp('timestamp').notNull().defaultNow(),
+  ipAddress: varchar('ip_address', { length: 45 }),
+});
+```
+
+<Note>
+  IP addresses are stored with a maximum length of 45 characters to support both IPv4 and IPv6 addresses.
+</Note>
+
+### Database Relations
+
+Activity logs are related to both teams and users:
+
+```typescript lib/db/schema.ts
+export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
+  team: one(teams, {
+    fields: [activityLogs.teamId],
+    references: [teams.id],
+  }),
+  user: one(users, {
+    fields: [activityLogs.userId],
+    references: [users.id],
+  }),
+}));
+```
+
+## Activity Types
+
+The system defines several predefined activity types:
+
+```typescript lib/db/schema.ts
+export enum ActivityType {
+  SIGN_UP = 'SIGN_UP',
+  SIGN_IN = 'SIGN_IN',
+  SIGN_OUT = 'SIGN_OUT',
+  UPDATE_PASSWORD = 'UPDATE_PASSWORD',
+  DELETE_ACCOUNT = 'DELETE_ACCOUNT',
+  UPDATE_ACCOUNT = 'UPDATE_ACCOUNT',
+  CREATE_TEAM = 'CREATE_TEAM',
+  REMOVE_TEAM_MEMBER = 'REMOVE_TEAM_MEMBER',
+  INVITE_TEAM_MEMBER = 'INVITE_TEAM_MEMBER',
+  ACCEPT_INVITATION = 'ACCEPT_INVITATION',
+}
+```
+
+### Activity Type Categories
+
+<CodeGroup>
+```typescript Authentication
+ActivityType.SIGN_UP
+ActivityType.SIGN_IN
+ActivityType.SIGN_OUT
+```
+
+```typescript Account Management
+ActivityType.UPDATE_PASSWORD
+ActivityType.DELETE_ACCOUNT
+ActivityType.UPDATE_ACCOUNT
+```
+
+```typescript Team Operations
+ActivityType.CREATE_TEAM
+ActivityType.REMOVE_TEAM_MEMBER
+ActivityType.INVITE_TEAM_MEMBER
+ActivityType.ACCEPT_INVITATION
+```
+</CodeGroup>
+
+<Tip>
+  You can extend the `ActivityType` enum to track additional activities specific to your application.
+</Tip>
+
+## Logging Activities
+
+### The logActivity Function
+
+Activities are logged using the `logActivity` helper function:
+
+```typescript app/(login)/actions.ts
+async function logActivity(
+  teamId: number | null | undefined,
+  userId: number,
+  type: ActivityType,
+  ipAddress?: string
+) {
+  if (teamId === null || teamId === undefined) {
+    return;
+  }
+  const newActivity: NewActivityLog = {
+    teamId,
+    userId,
+    action: type,
+    ipAddress: ipAddress || ''
+  };
+  await db.insert(activityLogs).values(newActivity);
+}
+```
+
+<ParamField path="teamId" type="number | null | undefined" required>
+  The team ID associated with the activity. If null or undefined, the activity is not logged.
+</ParamField>
+
+<ParamField path="userId" type="number" required>
+  The ID of the user performing the action.
+</ParamField>
+
+<ParamField path="type" type="ActivityType" required>
+  The type of activity from the ActivityType enum.
+</ParamField>
+
+<ParamField path="ipAddress" type="string" optional>
+  The IP address of the user. Defaults to an empty string if not provided.
+</ParamField>
+
+### Example Usage
+
+Here's how activities are logged during sign-in:
+
+```typescript app/(login)/actions.ts
+export const signIn = validatedAction(signInSchema, async (data, formData) => {
+  // ... authentication logic
+
+  await Promise.all([
+    setSession(foundUser),
+    logActivity(foundTeam?.id, foundUser.id, ActivityType.SIGN_IN)
+  ]);
+
+  redirect('/dashboard');
+});
+```
+
+## Retrieving Activity Logs
+
+### Getting Recent Activities
+
+Use `getActivityLogs()` to retrieve the most recent activities for the current user:
+
+```typescript lib/db/queries.ts
+export async function getActivityLogs() {
+  const user = await getUser();
+  if (!user) {
+    throw new Error('User not authenticated');
+  }
+
+  return await db
+    .select({
+      id: activityLogs.id,
+      action: activityLogs.action,
+      timestamp: activityLogs.timestamp,
+      ipAddress: activityLogs.ipAddress,
+      userName: users.name
+    })
+    .from(activityLogs)
+    .leftJoin(users, eq(activityLogs.userId, users.id))
+    .where(eq(activityLogs.userId, user.id))
+    .orderBy(desc(activityLogs.timestamp))
+    .limit(10);
+}
+```
+
+<Note>
+  This query returns the 10 most recent activities ordered by timestamp (newest first).
+</Note>
+
+### Return Type
+
+The function returns an array of activity records with joined user data:
+
+```typescript
+type ActivityLogResult = {
+  id: number;
+  action: string;
+  timestamp: Date;
+  ipAddress: string | null;
+  userName: string | null;
+}[];
+```
+
+## Common Logging Patterns
+
+### Authentication Events
+
+<Steps>
+  <Step title="Sign Up">
+    Log when a new user creates an account:
+    ```typescript
+    await logActivity(teamId, createdUser.id, ActivityType.SIGN_UP);
+    ```
+  </Step>
+  
+  <Step title="Sign In">
+    Log when a user signs in:
+    ```typescript
+    await logActivity(foundTeam?.id, foundUser.id, ActivityType.SIGN_IN);
+    ```
+  </Step>
+  
+  <Step title="Sign Out">
+    Log when a user signs out:
+    ```typescript
+    await logActivity(userWithTeam?.teamId, user.id, ActivityType.SIGN_OUT);
+    ```
+  </Step>
+</Steps>
+
+### Account Management
+
+<CodeGroup>
+```typescript Update Password
+const userWithTeam = await getUserWithTeam(user.id);
+
+await logActivity(
+  userWithTeam?.teamId,
+  user.id,
+  ActivityType.UPDATE_PASSWORD
+);
+```
+
+```typescript Update Account
+await logActivity(
+  userWithTeam?.teamId,
+  user.id,
+  ActivityType.UPDATE_ACCOUNT
+);
+```
+
+```typescript Delete Account
+await logActivity(
+  userWithTeam?.teamId,
+  user.id,
+  ActivityType.DELETE_ACCOUNT
+);
+```
+</CodeGroup>
+
+### Team Operations
+
+<CodeGroup>
+```typescript Create Team
+await logActivity(
+  teamId,
+  createdUser.id,
+  ActivityType.CREATE_TEAM
+);
+```
+
+```typescript Invite Member
+await logActivity(
+  userWithTeam.teamId,
+  user.id,
+  ActivityType.INVITE_TEAM_MEMBER
+);
+```
+
+```typescript Accept Invitation
+await logActivity(
+  teamId,
+  createdUser.id,
+  ActivityType.ACCEPT_INVITATION
+);
+```
+
+```typescript Remove Member
+await logActivity(
+  userWithTeam.teamId,
+  user.id,
+  ActivityType.REMOVE_TEAM_MEMBER
+);
+```
+</CodeGroup>
+
+## Type Definitions
+
+The schema exports type definitions for activity logs:
+
+```typescript lib/db/schema.ts
+export type ActivityLog = typeof activityLogs.$inferSelect;
+export type NewActivityLog = typeof activityLogs.$inferInsert;
+```
+
+## Best Practices
+
+<Warning>
+  Always ensure the teamId is valid before logging. The `logActivity` function silently returns if teamId is null or undefined.
+</Warning>
+
+<Tip>
+  Consider implementing IP address capture from request headers for more detailed audit trails:
+  ```typescript
+  const ipAddress = request.headers.get('x-forwarded-for') || request.ip;
+  await logActivity(teamId, userId, ActivityType.SIGN_IN, ipAddress);
+  ```
+</Tip>
+
+<Note>
+  Activity logs are team-scoped, meaning each log entry is associated with a specific team. This ensures proper data isolation in multi-tenant scenarios.
+</Note>
+
+## Extending Activity Logging
+
+To add custom activity types:
+
+<Steps>
+  <Step title="Add to enum">
+    Extend the `ActivityType` enum in `lib/db/schema.ts`:
+    ```typescript
+    export enum ActivityType {
+      // ... existing types
+      EXPORT_DATA = 'EXPORT_DATA',
+      CHANGE_SETTINGS = 'CHANGE_SETTINGS',
+    }
+    ```
+  </Step>
+  
+  <Step title="Log the activity">
+    Use the new type in your actions:
+    ```typescript
+    await logActivity(
+      teamId,
+      userId,
+      ActivityType.EXPORT_DATA
+    );
+    ```
+  </Step>
+  
+  <Step title="Display in UI">
+    Update your activity log display to handle the new types with appropriate icons and descriptions.
+  </Step>
+</Steps>
+
+## Related
+
+- [Authentication](/features/authentication) - Authentication events logging
+- [Teams](/features/teams) - Team operations logging
+- [Middleware](/features/middleware) - Request-level context for logging

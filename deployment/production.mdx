@@ -1,0 +1,528 @@
+---
+title: Production Configuration
+description: Complete guide to production environment variables, webhooks, security, and database setup
+---
+
+This guide covers everything you need to configure your Next.js SaaS Starter for a secure, production-ready deployment.
+
+## Production Environment Variables
+
+All five environment variables are required for production. Unlike development, you **must not** use test or development credentials in production.
+
+### Complete Configuration
+
+```bash .env
+POSTGRES_URL=postgresql://user:password@host:port/database
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+BASE_URL=https://yourdomain.com
+AUTH_SECRET=your-secure-random-string
+```
+
+<Warning>
+Never commit `.env` files to version control. The `.env` file contains sensitive credentials that should never be exposed.
+</Warning>
+
+### Environment Variable Details
+
+#### `BASE_URL`
+
+**Purpose**: Your production domain, used for redirects and webhooks
+
+**Production Value**: `https://yourdomain.com`
+
+**Notes**:
+- Must include protocol (`https://`)
+- No trailing slash
+- Must match your actual domain
+- Used by authentication redirects and Stripe checkout
+
+#### `POSTGRES_URL`
+
+**Purpose**: Connection string for your production PostgreSQL database
+
+**Format**: `postgresql://[user]:[password]@[host]:[port]/[database]?[params]`
+
+**Example**:
+```bash
+POSTGRES_URL=postgresql://prod_user:secure_password@db.example.com:5432/saas_prod?sslmode=require
+```
+
+**Best Practices**:
+- Always use SSL/TLS in production (`?sslmode=require`)
+- Use connection pooling for serverless environments
+- Restrict database user permissions (no DROP, CREATE on production)
+- Use strong, unique passwords
+
+<Tip>
+For serverless platforms like Vercel, use connection pooling:
+- **Vercel Postgres**: Built-in pooling
+- **Neon**: Add `?sslmode=require` to connection string
+- **Supabase**: Use the connection pooling port (6543 instead of 5432)
+</Tip>
+
+#### `STRIPE_SECRET_KEY`
+
+**Purpose**: Authenticates requests to Stripe API
+
+**Production Value**: `sk_live_...` (not `sk_test_...`)
+
+**Where to Find**:
+1. Go to [dashboard.stripe.com/apikeys](https://dashboard.stripe.com/apikeys)
+2. Toggle **Viewing test data** to **OFF** (production mode)
+3. Copy the **Secret key**
+
+<Warning>
+Production keys start with `sk_live_`. Test keys (`sk_test_`) will not work with production payments and webhooks.
+</Warning>
+
+**Security Notes**:
+- Never log or expose this key
+- Rotate keys if compromised
+- Used in `lib/payments/stripe.ts` to initialize Stripe SDK
+
+#### `STRIPE_WEBHOOK_SECRET`
+
+**Purpose**: Verifies webhook requests are from Stripe
+
+**Production Value**: `whsec_...`
+
+**How to Get**: See [Stripe Production Webhook Setup](#stripe-production-webhook-setup) below
+
+**Security Notes**:
+- Each webhook endpoint has a unique signing secret
+- Used for signature verification in `app/api/stripe/webhook/route.ts:5-20`
+- Production and test webhooks have different secrets
+
+#### `AUTH_SECRET`
+
+**Purpose**: Secret key for signing and verifying JWT authentication tokens
+
+**Production Value**: 32+ character random string
+
+**Generate Securely**:
+
+```bash
+# Using OpenSSL (recommended)
+openssl rand -base64 32
+
+# Using Node.js
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+**Example Output**:
+```
+AUTH_SECRET=8f3b9c4a2e7d6f1a5b8c3e9d7a2f4b6c8e1d3f5a7b9c2e4d6f8a1c3e5b7d9f2a
+```
+
+<Warning>
+- Use a different secret for production than development
+- Never reuse secrets across environments
+- Changing this secret will invalidate all existing user sessions
+</Warning>
+
+**Security Impact**:
+- Used by `lib/auth/session.ts` to sign JWTs
+- Protects against token forgery
+- Critical for authentication security
+
+## Stripe Production Webhook Setup
+
+Production webhooks are essential for handling subscription lifecycle events.
+
+### Step-by-Step Configuration
+
+<Steps>
+  <Step title="Navigate to Stripe Dashboard">
+    1. Go to [dashboard.stripe.com](https://dashboard.stripe.com)
+    2. Switch to **production mode** (toggle in top right should be OFF)
+    3. Navigate to **Developers** → **Webhooks**
+  </Step>
+  
+  <Step title="Create Webhook Endpoint">
+    Click **Add endpoint** and configure:
+    
+    **Endpoint URL**: `https://yourdomain.com/api/stripe/webhook`
+    
+    <Note>
+    This URL must match your production domain. The route is implemented in `app/api/stripe/webhook/route.ts`.
+    </Note>
+  </Step>
+  
+  <Step title="Select Events">
+    Add the following events that your application listens for:
+    
+    - ✅ `customer.subscription.updated`
+    - ✅ `customer.subscription.deleted`
+    
+    These are handled by `handleSubscriptionChange()` in `lib/payments/stripe.ts`.
+    
+    <Tip>
+    You can add more events later if you expand functionality:
+    - `customer.subscription.created`
+    - `invoice.payment_failed`
+    - `invoice.payment_succeeded`
+    </Tip>
+  </Step>
+  
+  <Step title="Copy Signing Secret">
+    After creating the endpoint:
+    
+    1. Click on your new webhook endpoint
+    2. Click **Reveal** next to **Signing secret**
+    3. Copy the secret (starts with `whsec_...`)
+    4. Add to your environment variables as `STRIPE_WEBHOOK_SECRET`
+  </Step>
+  
+  <Step title="Test the Webhook">
+    Use Stripe's webhook testing feature:
+    
+    1. In the webhook details page, click **Send test webhook**
+    2. Select `customer.subscription.updated`
+    3. Click **Send test webhook**
+    4. Verify your endpoint returns `200 OK`
+    
+    Check your application logs for any errors.
+  </Step>
+</Steps>
+
+### Webhook Implementation
+
+The webhook handler in `app/api/stripe/webhook/route.ts` performs:
+
+1. **Signature Verification** (line 14): Validates request is from Stripe
+2. **Event Processing** (lines 23-31): Handles subscription updates/deletions
+3. **Database Updates**: Calls `handleSubscriptionChange()` to update user subscriptions
+
+### Monitoring Webhooks
+
+Monitor webhook delivery in Stripe Dashboard:
+
+1. Go to **Developers** → **Webhooks**
+2. Click on your endpoint
+3. View **Recent deliveries** to see success/failure status
+
+**Successful Response**: HTTP 200 with `{"received": true}`
+
+**Common Failures**:
+- **400 Bad Request**: Signature verification failed (check `STRIPE_WEBHOOK_SECRET`)
+- **500 Internal Server Error**: Application error (check logs)
+- **Timeout**: Request took >5 seconds (optimize webhook handler)
+
+<Warning>
+Stripe attempts to deliver each webhook 3 times over 3 days. Repeated failures will disable the endpoint.
+</Warning>
+
+## Security Considerations
+
+Production deployments require additional security measures.
+
+### Authentication Security
+
+The application uses JWT-based authentication with several security features:
+
+#### Session Management
+
+**Implementation**: `middleware.ts:18-41`
+
+```typescript
+// Secure cookie configuration
+res.cookies.set({
+  name: 'session',
+  value: await signToken({...parsed, expires: expiresInOneDay.toISOString()}),
+  httpOnly: true,    // Prevents JavaScript access
+  secure: true,      // HTTPS only
+  sameSite: 'lax',   // CSRF protection
+  expires: expiresInOneDay
+});
+```
+
+**Security Features**:
+- `httpOnly`: Cookies inaccessible to JavaScript (XSS protection)
+- `secure`: Only transmitted over HTTPS
+- `sameSite: 'lax'`: Prevents CSRF attacks
+- 24-hour expiration with automatic renewal
+
+#### Route Protection
+
+**Global Middleware**: `middleware.ts:5-14`
+
+```typescript
+const protectedRoutes = '/dashboard';
+if (isProtectedRoute && !sessionCookie) {
+  return NextResponse.redirect(new URL('/sign-in', request.url));
+}
+```
+
+All routes starting with `/dashboard` require authentication.
+
+#### Password Security
+
+Passwords are hashed using **bcrypt** with automatic salting:
+
+- Implemented in authentication actions
+- Never store plaintext passwords
+- Hash strength is automatically managed by bcrypt
+
+<Tip>
+For enhanced security, consider adding:
+- Rate limiting on authentication endpoints
+- Two-factor authentication (2FA)
+- Password strength requirements
+- Account lockout after failed attempts
+</Tip>
+
+### API Security
+
+All API routes should validate authentication:
+
+```typescript
+import { verifyToken } from '@/lib/auth/session';
+
+export async function POST(request: Request) {
+  const sessionCookie = request.cookies.get('session');
+  if (!sessionCookie) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  
+  try {
+    const session = await verifyToken(sessionCookie.value);
+    // Process authenticated request
+  } catch (error) {
+    return NextResponse.json({ error: 'Invalid session' }, { status: 401 });
+  }
+}
+```
+
+### Environment Security
+
+<Accordion title="Secrets Management">
+  **Never** commit secrets to version control:
+  
+  - Add `.env` to `.gitignore`
+  - Use platform environment variables (Vercel, AWS, etc.)
+  - Rotate secrets if exposed
+  - Use different secrets per environment
+</Accordion>
+
+<Accordion title="HTTPS/SSL">
+  Always use HTTPS in production:
+  
+  - Vercel provides automatic SSL certificates
+  - Enforce HTTPS for all requests
+  - Check `secure: true` in cookie configuration
+  - Use `sslmode=require` for database connections
+</Accordion>
+
+<Accordion title="Database Security">
+  Protect your production database:
+  
+  - Use strong passwords (20+ random characters)
+  - Enable SSL/TLS for connections
+  - Restrict IP access if possible
+  - Use least-privilege database users
+  - Regular backups and disaster recovery plan
+  - Monitor for suspicious queries
+</Accordion>
+
+<Accordion title="Dependency Security">
+  Keep dependencies updated:
+  
+  ```bash
+  # Check for vulnerabilities
+  pnpm audit
+  
+  # Update dependencies
+  pnpm update
+  ```
+  
+  Set up automated security alerts:
+  - Enable Dependabot on GitHub
+  - Monitor npm advisories
+  - Test updates before deploying
+</Accordion>
+
+## Database Considerations
+
+Production database setup requires careful planning.
+
+### Connection Pooling
+
+**Why Needed**: Serverless functions create new connections per request
+
+**Solutions**:
+
+- **Vercel Postgres**: Built-in connection pooling
+- **Neon**: Serverless-native with automatic pooling
+- **Supabase**: Use connection pooling port (6543)
+- **PgBouncer**: Self-hosted connection pooler
+
+### Migrations
+
+Run migrations using Drizzle Kit:
+
+```bash
+# Generate migration from schema changes
+pnpm db:generate
+
+# Apply migrations to production
+pnpm db:migrate
+```
+
+<Warning>
+**Production Migration Safety**:
+- Always backup database before migrations
+- Test migrations on staging environment first
+- Review generated SQL in `lib/db/migrations/`
+- Consider maintenance windows for breaking changes
+- Have rollback plan ready
+</Warning>
+
+### Database Schema
+
+The application schema is defined in `lib/db/schema.ts` with tables for:
+
+- `users` - User accounts and authentication
+- `teams` - Team/workspace management
+- `teamMembers` - User-team relationships with RBAC
+- `activityLogs` - Audit trail of user actions
+
+### Backups
+
+**Automated Backups**:
+- **Vercel Postgres**: Automatic daily backups (retained 7 days)
+- **Neon**: Point-in-time recovery (configurable retention)
+- **Supabase**: Daily backups (configurable retention)
+
+**Manual Backups**:
+```bash
+# Export database
+pg_dump $POSTGRES_URL > backup-$(date +%Y%m%d).sql
+
+# Restore database
+psql $POSTGRES_URL < backup-20260304.sql
+```
+
+<Tip>
+**Backup Strategy**:
+- Automated daily backups
+- Before major migrations
+- Before schema changes
+- Store backups in separate location
+- Test restoration process regularly
+</Tip>
+
+### Monitoring
+
+Monitor database health:
+
+- **Connection count**: Ensure not hitting limits
+- **Query performance**: Identify slow queries
+- **Storage usage**: Plan for scaling
+- **Error rates**: Catch issues early
+
+Most managed databases provide built-in monitoring dashboards.
+
+## Production Checklist
+
+Before going live, verify all items:
+
+<AccordionGroup>
+  <Accordion title="Environment Variables">
+    - ✅ `BASE_URL` set to production domain
+    - ✅ `POSTGRES_URL` points to production database with SSL
+    - ✅ `STRIPE_SECRET_KEY` is production key (`sk_live_...`)
+    - ✅ `STRIPE_WEBHOOK_SECRET` from production webhook
+    - ✅ `AUTH_SECRET` is cryptographically random
+    - ✅ No test or development values in production
+  </Accordion>
+  
+  <Accordion title="Stripe Configuration">
+    - ✅ Using production API keys
+    - ✅ Production webhook created
+    - ✅ Webhook events configured (subscription.updated, subscription.deleted)
+    - ✅ Webhook secret added to environment variables
+    - ✅ Test webhook receives 200 OK response
+    - ✅ Webhook URL matches production domain
+  </Accordion>
+  
+  <Accordion title="Database">
+    - ✅ Production database created
+    - ✅ Migrations applied
+    - ✅ SSL/TLS enabled
+    - ✅ Connection pooling configured
+    - ✅ Automated backups enabled
+    - ✅ Database credentials are secure
+  </Accordion>
+  
+  <Accordion title="Security">
+    - ✅ HTTPS enabled (automatic with Vercel)
+    - ✅ Secure cookie settings verified
+    - ✅ Authentication middleware active
+    - ✅ No secrets in source control
+    - ✅ Dependencies updated and audited
+    - ✅ Error handling doesn't expose sensitive info
+  </Accordion>
+  
+  <Accordion title="Testing">
+    - ✅ Production build succeeds (`pnpm build`)
+    - ✅ Authentication flow works
+    - ✅ Stripe checkout completes successfully
+    - ✅ Webhooks process correctly
+    - ✅ Protected routes require authentication
+    - ✅ Database operations work correctly
+  </Accordion>
+</AccordionGroup>
+
+## Going Live
+
+Once all checklist items are complete:
+
+<Steps>
+  <Step title="Final Testing">
+    Test critical user flows:
+    - Sign up new account
+    - Complete payment (use real card, then refund)
+    - Access dashboard
+    - Manage subscription via customer portal
+  </Step>
+  
+  <Step title="Monitor Initial Traffic">
+    Watch logs and metrics closely:
+    - Check for errors in deployment logs
+    - Monitor webhook delivery success rate
+    - Verify database connections are stable
+    - Watch for authentication issues
+  </Step>
+  
+  <Step title="Set Up Alerts">
+    Configure alerts for:
+    - Application errors
+    - Failed webhook deliveries
+    - Database connection failures
+    - Unusual traffic patterns
+  </Step>
+</Steps>
+
+<Note>
+Consider a soft launch with limited users before full public release to catch any production-specific issues.
+</Note>
+
+## Support and Maintenance
+
+### Regular Maintenance
+
+- **Weekly**: Review error logs and webhook delivery
+- **Monthly**: Update dependencies, review security advisories
+- **Quarterly**: Database performance review, backup restoration test
+
+### Getting Help
+
+- **GitHub Issues**: [github.com/nextjs/saas-starter/issues](https://github.com/nextjs/saas-starter/issues)
+- **Next.js Docs**: [nextjs.org/docs](https://nextjs.org/docs)
+- **Stripe Support**: [support.stripe.com](https://support.stripe.com)
+- **Vercel Support**: [vercel.com/support](https://vercel.com/support)
+
+<Card title="Deploy to Vercel" icon="rocket" href="/deployment/vercel">
+  Ready to deploy? Follow our step-by-step Vercel deployment guide
+</Card>

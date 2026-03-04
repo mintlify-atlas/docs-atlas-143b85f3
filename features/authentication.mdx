@@ -1,0 +1,252 @@
+---
+title: 'Authentication'
+description: 'JWT-based authentication with secure session management and password hashing'
+---
+
+## Overview
+
+The Next.js SaaS Starter uses a JWT-based authentication system with secure session management. Authentication is handled through HTTP-only cookies with bcrypt password hashing for security.
+
+## Core Components
+
+### Session Management
+
+Sessions are managed using JWT tokens stored in HTTP-only cookies. The session implementation is located in `lib/auth/session.ts`.
+
+#### Session Data Structure
+
+```typescript
+type SessionData = {
+  user: { id: number };
+  expires: string;
+};
+```
+
+### Key Functions
+
+<Note>
+  All session functions are server-side only and should be called from Server Components, Server Actions, or API Routes.
+</Note>
+
+#### Creating a Session
+
+Use `setSession()` to create a new user session after successful authentication:
+
+```typescript lib/auth/session.ts
+export async function setSession(user: NewUser) {
+  const expiresInOneDay = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const session: SessionData = {
+    user: { id: user.id! },
+    expires: expiresInOneDay.toISOString(),
+  };
+  const encryptedSession = await signToken(session);
+  (await cookies()).set('session', encryptedSession, {
+    expires: expiresInOneDay,
+    httpOnly: true,
+    secure: true,
+    sameSite: 'lax',
+  });
+}
+```
+
+<ParamField path="user" type="NewUser" required>
+  The user object to create a session for. Must include a valid user ID.
+</ParamField>
+
+#### Retrieving the Current Session
+
+Use `getSession()` to retrieve and verify the current user's session:
+
+```typescript lib/auth/session.ts
+export async function getSession() {
+  const session = (await cookies()).get('session')?.value;
+  if (!session) return null;
+  return await verifyToken(session);
+}
+```
+
+Returns `SessionData` if valid, or `null` if no session exists or the token is invalid.
+
+#### Getting the Current User
+
+The `getUser()` function from `lib/db/queries.ts` retrieves the full user object from the database:
+
+```typescript lib/db/queries.ts
+export async function getUser() {
+  const sessionCookie = (await cookies()).get('session');
+  if (!sessionCookie || !sessionCookie.value) {
+    return null;
+  }
+
+  const sessionData = await verifyToken(sessionCookie.value);
+  if (
+    !sessionData ||
+    !sessionData.user ||
+    typeof sessionData.user.id !== 'number'
+  ) {
+    return null;
+  }
+
+  if (new Date(sessionData.expires) < new Date()) {
+    return null;
+  }
+
+  const user = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.id, sessionData.user.id), isNull(users.deletedAt)))
+    .limit(1);
+
+  if (user.length === 0) {
+    return null;
+  }
+
+  return user[0];
+}
+```
+
+<Tip>
+  Use `getUser()` when you need the complete user data. Use `getSession()` when you only need the session metadata.
+</Tip>
+
+## Password Security
+
+### Password Hashing
+
+Passwords are hashed using bcrypt with 10 salt rounds:
+
+```typescript lib/auth/session.ts
+const SALT_ROUNDS = 10;
+
+export async function hashPassword(password: string) {
+  return hash(password, SALT_ROUNDS);
+}
+```
+
+### Password Verification
+
+Use `comparePasswords()` to verify a plaintext password against a hashed password:
+
+```typescript lib/auth/session.ts
+export async function comparePasswords(
+  plainTextPassword: string,
+  hashedPassword: string
+) {
+  return compare(plainTextPassword, hashedPassword);
+}
+```
+
+## JWT Token Operations
+
+### Signing Tokens
+
+Tokens are signed using the HS256 algorithm and expire after 24 hours:
+
+```typescript lib/auth/session.ts
+export async function signToken(payload: SessionData) {
+  return await new SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('1 day from now')
+    .sign(key);
+}
+```
+
+### Verifying Tokens
+
+```typescript lib/auth/session.ts
+export async function verifyToken(input: string) {
+  const { payload } = await jwtVerify(input, key, {
+    algorithms: ['HS256'],
+  });
+  return payload as SessionData;
+}
+```
+
+<Warning>
+  The `AUTH_SECRET` environment variable must be set and should be a strong, random string. This is used as the signing key for JWT tokens.
+</Warning>
+
+## Authentication Flow
+
+<Steps>
+  <Step title="User submits credentials">
+    User submits email and password through the sign-in form.
+  </Step>
+  
+  <Step title="Password verification">
+    The system retrieves the user from the database and verifies the password using `comparePasswords()`.
+  </Step>
+  
+  <Step title="Session creation">
+    If credentials are valid, `setSession()` creates a JWT token and sets it as an HTTP-only cookie.
+  </Step>
+  
+  <Step title="Middleware validation">
+    On subsequent requests, the middleware verifies the session and optionally refreshes it.
+  </Step>
+</Steps>
+
+## Sign In Example
+
+Here's how the sign-in action uses these authentication utilities:
+
+```typescript app/(login)/actions.ts
+export const signIn = validatedAction(signInSchema, async (data, formData) => {
+  const { email, password } = data;
+
+  const userWithTeam = await db
+    .select({
+      user: users,
+      team: teams
+    })
+    .from(users)
+    .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
+    .leftJoin(teams, eq(teamMembers.teamId, teams.id))
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (userWithTeam.length === 0) {
+    return {
+      error: 'Invalid email or password. Please try again.',
+    };
+  }
+
+  const { user: foundUser } = userWithTeam[0];
+
+  const isPasswordValid = await comparePasswords(
+    password,
+    foundUser.passwordHash
+  );
+
+  if (!isPasswordValid) {
+    return {
+      error: 'Invalid email or password. Please try again.',
+    };
+  }
+
+  await setSession(foundUser);
+  redirect('/dashboard');
+});
+```
+
+## Environment Variables
+
+<ParamField path="AUTH_SECRET" type="string" required>
+  Secret key used for signing JWT tokens. Must be a strong, random string.
+</ParamField>
+
+## Security Features
+
+- **HTTP-Only Cookies**: Session tokens are stored in HTTP-only cookies to prevent XSS attacks
+- **Secure Flag**: Cookies are marked as secure in production
+- **SameSite Protection**: Cookies use `lax` SameSite policy to prevent CSRF attacks
+- **Password Hashing**: Bcrypt with 10 salt rounds
+- **Token Expiration**: Sessions expire after 24 hours
+- **Soft Deletion**: Users are soft-deleted to maintain referential integrity
+
+## Related
+
+- [Middleware](/features/middleware) - Learn how sessions are validated on each request
+- [Teams](/features/teams) - Understand team-based access control
+- [Activity Logs](/features/activity-logs) - Track authentication events

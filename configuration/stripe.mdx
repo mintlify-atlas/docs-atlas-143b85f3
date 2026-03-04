@@ -1,0 +1,628 @@
+---
+title: Stripe Configuration
+description: Set up Stripe payments, subscriptions, and webhooks for the Next.js SaaS Starter
+---
+
+The Next.js SaaS Starter uses Stripe for subscription billing, payment processing, and customer management. This guide covers everything you need to configure Stripe for your application.
+
+## Prerequisites
+
+Before configuring Stripe, you'll need:
+
+1. A Stripe account ([Sign up](https://dashboard.stripe.com/register))
+2. Stripe CLI installed ([Installation guide](https://docs.stripe.com/stripe-cli))
+3. Stripe CLI authenticated (`stripe login`)
+
+## Stripe API Configuration
+
+The Stripe client is initialized in `lib/payments/stripe.ts`:
+
+```typescript lib/payments/stripe.ts
+import Stripe from 'stripe';
+
+export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2025-04-30.basil'
+});
+```
+
+### Required Environment Variables
+
+Add these to your `.env` file:
+
+<ParamField path="STRIPE_SECRET_KEY" type="string" required>
+  Your Stripe secret API key
+  
+  **Format**: `sk_test_...` (test mode) or `sk_live_...` (production)
+  
+  **Where to find it**: [Stripe Dashboard → API Keys](https://dashboard.stripe.com/test/apikeys)
+  
+  <Warning>
+    Never expose this key in client-side code or commit it to version control.
+  </Warning>
+</ParamField>
+
+<ParamField path="STRIPE_WEBHOOK_SECRET" type="string" required>
+  Webhook signing secret for verifying events
+  
+  **Format**: `whsec_...`
+  
+  See [Webhook Configuration](#webhook-configuration) below for setup instructions.
+</ParamField>
+
+<ParamField path="BASE_URL" type="string" required>
+  Your application's base URL for redirects
+  
+  **Development**: `http://localhost:3000`
+  
+  **Production**: `https://yourdomain.com`
+</ParamField>
+
+## Getting Your API Keys
+
+### Test Mode (Development)
+
+1. Go to [Stripe Dashboard](https://dashboard.stripe.com/test/apikeys)
+2. Ensure you're in **Test mode** (toggle in top right)
+3. Copy the "Secret key" (starts with `sk_test_`)
+4. Add to `.env`:
+   ```bash
+   STRIPE_SECRET_KEY=sk_test_51Abc123...
+   ```
+
+### Live Mode (Production)
+
+<Warning>
+  Only use live mode keys in production. Test mode keys cannot process real payments.
+</Warning>
+
+1. Switch to **Live mode** in Stripe Dashboard
+2. Copy the "Secret key" (starts with `sk_live_`)
+3. Update your production `.env` with the live key
+4. Complete Stripe account verification before processing real payments
+
+## Subscription Products Setup
+
+The starter includes a seed script that creates subscription products in Stripe.
+
+### Creating Products with Seed Script
+
+Run the database seed command:
+
+```bash
+pnpm db:seed
+```
+
+This creates two subscription products:
+
+**Base Plan**
+- Name: "Base"
+- Price: $8.00/month
+- Trial: 7 days
+- Billing: Monthly recurring
+
+**Plus Plan**
+- Name: "Plus"
+- Price: $12.00/month
+- Trial: 7 days
+- Billing: Monthly recurring
+
+<Note>
+  Products are created in cents. `unit_amount: 800` = $8.00 USD.
+</Note>
+
+### Seed Script Details
+
+From `lib/db/seed.ts`:
+
+```typescript lib/db/seed.ts
+import { stripe } from '../payments/stripe';
+
+async function createStripeProducts() {
+  const baseProduct = await stripe.products.create({
+    name: 'Base',
+    description: 'Base subscription plan',
+  });
+
+  await stripe.prices.create({
+    product: baseProduct.id,
+    unit_amount: 800, // $8 in cents
+    currency: 'usd',
+    recurring: {
+      interval: 'month',
+      trial_period_days: 7,
+    },
+  });
+
+  const plusProduct = await stripe.products.create({
+    name: 'Plus',
+    description: 'Plus subscription plan',
+  });
+
+  await stripe.prices.create({
+    product: plusProduct.id,
+    unit_amount: 1200, // $12 in cents
+    currency: 'usd',
+    recurring: {
+      interval: 'month',
+      trial_period_days: 7,
+    },
+  });
+}
+```
+
+### Manual Product Creation
+
+You can also create products manually in the [Stripe Dashboard](https://dashboard.stripe.com/test/products):
+
+1. Click "Add product"
+2. Enter product name and description
+3. Set pricing model to "Recurring"
+4. Configure price and billing interval
+5. Add trial period if desired
+6. Save the product
+
+## Checkout Session
+
+The application uses Stripe Checkout for subscription sign-ups.
+
+### Implementation
+
+From `lib/payments/stripe.ts`:
+
+```typescript
+export async function createCheckoutSession({
+  team,
+  priceId
+}: {
+  team: Team | null;
+  priceId: string;
+}) {
+  const user = await getUser();
+
+  if (!team || !user) {
+    redirect(`/sign-up?redirect=checkout&priceId=${priceId}`);
+  }
+
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ['card'],
+    line_items: [
+      {
+        price: priceId,
+        quantity: 1
+      }
+    ],
+    mode: 'subscription',
+    success_url: `${process.env.BASE_URL}/api/stripe/checkout?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.BASE_URL}/pricing`,
+    customer: team.stripeCustomerId || undefined,
+    client_reference_id: user.id.toString(),
+    allow_promotion_codes: true,
+    subscription_data: {
+      trial_period_days: 14
+    }
+  });
+
+  redirect(session.url!);
+}
+```
+
+### Checkout Features
+
+<ParamField path="payment_method_types" type="array">
+  Accepted payment methods - currently `['card']`
+</ParamField>
+
+<ParamField path="mode" type="string">
+  Set to `'subscription'` for recurring billing
+</ParamField>
+
+<ParamField path="success_url" type="string">
+  Redirect URL after successful payment: `/api/stripe/checkout?session_id={CHECKOUT_SESSION_ID}`
+</ParamField>
+
+<ParamField path="cancel_url" type="string">
+  Redirect URL if user cancels: `/pricing`
+</ParamField>
+
+<ParamField path="allow_promotion_codes" type="boolean">
+  Enables promo code input during checkout
+</ParamField>
+
+<ParamField path="subscription_data.trial_period_days" type="number">
+  Free trial duration - set to 14 days
+</ParamField>
+
+## Customer Portal
+
+Stripe Customer Portal lets users manage their subscription, payment methods, and billing history.
+
+### Implementation
+
+From `lib/payments/stripe.ts`:
+
+```typescript
+export async function createCustomerPortalSession(team: Team) {
+  if (!team.stripeCustomerId || !team.stripeProductId) {
+    redirect('/pricing');
+  }
+
+  let configuration: Stripe.BillingPortal.Configuration;
+  const configurations = await stripe.billingPortal.configurations.list();
+
+  if (configurations.data.length > 0) {
+    configuration = configurations.data[0];
+  } else {
+    // Create configuration with subscription management features
+    configuration = await stripe.billingPortal.configurations.create({
+      business_profile: {
+        headline: 'Manage your subscription'
+      },
+      features: {
+        subscription_update: {
+          enabled: true,
+          default_allowed_updates: ['price', 'quantity', 'promotion_code'],
+          proration_behavior: 'create_prorations'
+        },
+        subscription_cancel: {
+          enabled: true,
+          mode: 'at_period_end',
+          cancellation_reason: {
+            enabled: true,
+            options: [
+              'too_expensive',
+              'missing_features',
+              'switched_service',
+              'unused',
+              'other'
+            ]
+          }
+        },
+        payment_method_update: {
+          enabled: true
+        }
+      }
+    });
+  }
+
+  return stripe.billingPortal.sessions.create({
+    customer: team.stripeCustomerId,
+    return_url: `${process.env.BASE_URL}/dashboard`,
+    configuration: configuration.id
+  });
+}
+```
+
+### Portal Features
+
+✅ **Subscription updates**: Change plan, quantity, or apply promo codes
+✅ **Subscription cancellation**: Cancel at period end with feedback
+✅ **Payment methods**: Update card information
+✅ **Billing history**: View invoices and receipts
+✅ **Proration**: Automatic prorated charges when upgrading/downgrading
+
+## Webhook Configuration
+
+Webhooks enable Stripe to notify your application about subscription changes.
+
+### Events Handled
+
+The webhook endpoint (`app/api/stripe/webhook/route.ts`) handles:
+
+- `customer.subscription.updated` - Subscription changes (plan upgrades, renewals, etc.)
+- `customer.subscription.deleted` - Subscription cancellations
+
+```typescript app/api/stripe/webhook/route.ts
+import Stripe from 'stripe';
+import { stripe, handleSubscriptionChange } from '@/lib/payments/stripe';
+
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+
+export async function POST(request: NextRequest) {
+  const payload = await request.text();
+  const signature = request.headers.get('stripe-signature') as string;
+
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(payload, signature, webhookSecret);
+  } catch (err) {
+    return NextResponse.json(
+      { error: 'Webhook signature verification failed.' },
+      { status: 400 }
+    );
+  }
+
+  switch (event.type) {
+    case 'customer.subscription.updated':
+    case 'customer.subscription.deleted':
+      const subscription = event.data.object as Stripe.Subscription;
+      await handleSubscriptionChange(subscription);
+      break;
+    default:
+      console.log(`Unhandled event type ${event.type}`);
+  }
+
+  return NextResponse.json({ received: true });
+}
+```
+
+### Development Setup (Stripe CLI)
+
+For local development, use the Stripe CLI to forward webhook events:
+
+1. **Install Stripe CLI**: Follow the [installation guide](https://docs.stripe.com/stripe-cli)
+
+2. **Authenticate**:
+   ```bash
+   stripe login
+   ```
+
+3. **Get webhook secret**:
+   ```bash
+   stripe listen --print-secret
+   ```
+   
+   Copy the webhook secret (`whsec_...`) to your `.env`:
+   ```bash
+   STRIPE_WEBHOOK_SECRET=whsec_abc123...
+   ```
+
+4. **Start webhook forwarding**:
+   ```bash
+   stripe listen --forward-to localhost:3000/api/stripe/webhook
+   ```
+
+<Note>
+  Keep the `stripe listen` command running while developing. It forwards Stripe events to your local server.
+</Note>
+
+### Production Setup
+
+1. Go to [Stripe Dashboard → Webhooks](https://dashboard.stripe.com/webhooks)
+
+2. Click "Add endpoint"
+
+3. **Enter endpoint URL**:
+   ```
+   https://yourdomain.com/api/stripe/webhook
+   ```
+
+4. **Select events to listen to**:
+   - `customer.subscription.updated`
+   - `customer.subscription.deleted`
+
+5. **Copy signing secret**:
+   - After creating the endpoint, copy the "Signing secret"
+   - Update your production `.env`:
+     ```bash
+     STRIPE_WEBHOOK_SECRET=whsec_prod_abc123...
+     ```
+
+<Warning>
+  Use different webhook secrets for development and production. Never share webhook secrets.
+</Warning>
+
+### Webhook Security
+
+Stripe signs webhook events to prevent tampering. The verification process:
+
+1. Stripe sends event with `stripe-signature` header
+2. Your app verifies the signature using `STRIPE_WEBHOOK_SECRET`
+3. If valid, the event is processed
+4. If invalid, a 400 error is returned
+
+This ensures events are legitimate and haven't been modified.
+
+## Subscription Management
+
+The `handleSubscriptionChange` function updates your database when subscriptions change:
+
+```typescript lib/payments/stripe.ts
+export async function handleSubscriptionChange(
+  subscription: Stripe.Subscription
+) {
+  const customerId = subscription.customer as string;
+  const subscriptionId = subscription.id;
+  const status = subscription.status;
+
+  const team = await getTeamByStripeCustomerId(customerId);
+
+  if (!team) {
+    console.error('Team not found for Stripe customer:', customerId);
+    return;
+  }
+
+  if (status === 'active' || status === 'trialing') {
+    const plan = subscription.items.data[0]?.plan;
+    await updateTeamSubscription(team.id, {
+      stripeSubscriptionId: subscriptionId,
+      stripeProductId: plan?.product as string,
+      planName: (plan?.product as Stripe.Product).name,
+      subscriptionStatus: status
+    });
+  } else if (status === 'canceled' || status === 'unpaid') {
+    await updateTeamSubscription(team.id, {
+      stripeSubscriptionId: null,
+      stripeProductId: null,
+      planName: null,
+      subscriptionStatus: status
+    });
+  }
+}
+```
+
+### Subscription Statuses
+
+- **`active`**: Subscription is active and paid
+- **`trialing`**: In free trial period
+- **`canceled`**: Subscription has been cancelled
+- **`unpaid`**: Payment failed
+- **`past_due`**: Payment is overdue
+
+## Testing
+
+### Test Card Numbers
+
+Stripe provides test cards for development:
+
+<CodeGroup>
+
+```text Successful Payment
+4242 4242 4242 4242
+Any future expiration date
+Any 3-digit CVC
+```
+
+```text Declined Payment
+4000 0000 0000 0002
+Any future expiration date
+Any 3-digit CVC
+```
+
+```text Requires Authentication
+4000 0025 0000 3155
+Any future expiration date  
+Any 3-digit CVC
+```
+
+```text Insufficient Funds
+4000 0000 0000 9995
+Any future expiration date
+Any 3-digit CVC
+```
+
+</CodeGroup>
+
+More test cards: [Stripe Testing Documentation](https://docs.stripe.com/testing)
+
+### Testing Webhooks Locally
+
+1. **Start your development server**:
+   ```bash
+   pnpm dev
+   ```
+
+2. **Start Stripe webhook forwarding**:
+   ```bash
+   stripe listen --forward-to localhost:3000/api/stripe/webhook
+   ```
+
+3. **Trigger test events**:
+   ```bash
+   stripe trigger customer.subscription.updated
+   stripe trigger customer.subscription.deleted
+   ```
+
+4. **Check your application logs** to verify webhook processing
+
+### Testing Subscriptions
+
+1. Create a checkout session with a test price ID
+2. Use test card `4242 4242 4242 4242`
+3. Complete checkout
+4. Verify subscription appears in:
+   - Your database (`teams` table)
+   - Stripe Dashboard → Customers
+5. Test the customer portal:
+   - Update payment method
+   - Cancel subscription
+   - View invoices
+
+## Retrieving Products and Prices
+
+Helper functions to fetch Stripe data:
+
+```typescript lib/payments/stripe.ts
+export async function getStripePrices() {
+  const prices = await stripe.prices.list({
+    expand: ['data.product'],
+    active: true,
+    type: 'recurring'
+  });
+
+  return prices.data.map((price) => ({
+    id: price.id,
+    productId: typeof price.product === 'string' ? price.product : price.product.id,
+    unitAmount: price.unit_amount,
+    currency: price.currency,
+    interval: price.recurring?.interval,
+    trialPeriodDays: price.recurring?.trial_period_days
+  }));
+}
+
+export async function getStripeProducts() {
+  const products = await stripe.products.list({
+    active: true,
+    expand: ['data.default_price']
+  });
+
+  return products.data.map((product) => ({
+    id: product.id,
+    name: product.name,
+    description: product.description,
+    defaultPriceId: typeof product.default_price === 'string'
+      ? product.default_price
+      : product.default_price?.id
+  }));
+}
+```
+
+Use these functions to build pricing pages or display subscription options.
+
+## Production Checklist
+
+Before going live:
+
+- [ ] Switch to live API keys (`sk_live_...`)
+- [ ] Create live products and prices
+- [ ] Configure production webhook endpoint
+- [ ] Update `BASE_URL` to production domain
+- [ ] Complete Stripe account activation
+- [ ] Set up tax collection (if required)
+- [ ] Configure email receipts and invoices
+- [ ] Test the complete checkout flow
+- [ ] Test webhook delivery in production
+- [ ] Monitor Stripe logs for errors
+
+## Troubleshooting
+
+### Webhook signature verification failed
+
+**Cause**: `STRIPE_WEBHOOK_SECRET` is incorrect or missing
+
+**Solution**:
+- Development: Run `stripe listen --print-secret` and copy the secret
+- Production: Get the secret from your webhook endpoint in Stripe Dashboard
+
+### No such customer
+
+**Cause**: Team doesn't have a `stripeCustomerId` set
+
+**Solution**: Ensure the checkout session sets the customer ID correctly
+
+### Subscription not updating in database
+
+**Cause**: Webhook not being received or processed
+
+**Solution**:
+- Check `stripe listen` is running (development)
+- Verify webhook endpoint is configured (production)
+- Check application logs for errors
+- Verify `handleSubscriptionChange` is being called
+
+### Test mode mismatch
+
+**Cause**: Using test API key with live webhook secret (or vice versa)
+
+**Solution**: Ensure all Stripe resources (keys, products, webhooks) are in the same mode
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="key" href="/configuration/environment-variables">
+    Review all configuration options
+  </Card>
+  <Card title="Database Setup" icon="database" href="/configuration/database">
+    Set up PostgreSQL and migrations
+  </Card>
+</CardGroup>

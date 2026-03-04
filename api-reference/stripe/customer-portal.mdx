@@ -1,0 +1,232 @@
+---
+title: 'Customer Portal'
+description: 'Create Stripe Customer Portal sessions for subscription management'
+---
+
+## createCustomerPortalSession
+
+Creates a Stripe Customer Portal session that allows customers to manage their subscription, update payment methods, view invoices, and cancel their subscription. The portal is automatically configured with the team's current product and pricing options.
+
+### Function Signature
+
+```typescript
+async function createCustomerPortalSession(
+  team: Team
+): Promise<Stripe.BillingPortal.Session>
+```
+
+### Parameters
+
+<ParamField path="team" type="Team" required>
+  The team object for which to create the customer portal session. Must have both `stripeCustomerId` and `stripeProductId` set.
+  
+  The `Team` type includes:
+  - `id`: number
+  - `name`: string
+  - `stripeCustomerId`: string | null (required for this function)
+  - `stripeSubscriptionId`: string | null
+  - `stripeProductId`: string | null (required for this function)
+  - `planName`: string | null
+  - `subscriptionStatus`: string | null
+</ParamField>
+
+### Return Value
+
+<ResponseField name="session" type="Stripe.BillingPortal.Session">
+  A Stripe Customer Portal session object containing:
+  
+  <ResponseField name="id" type="string">
+    The unique identifier for the portal session
+  </ResponseField>
+  
+  <ResponseField name="url" type="string">
+    The URL to redirect the customer to access the portal
+  </ResponseField>
+  
+  <ResponseField name="customer" type="string">
+    The Stripe customer ID associated with this session
+  </ResponseField>
+  
+  <ResponseField name="return_url" type="string">
+    The URL customers will be returned to after exiting the portal (set to `/dashboard`)
+  </ResponseField>
+  
+  <ResponseField name="configuration" type="string">
+    The ID of the portal configuration used for this session
+  </ResponseField>
+</ResponseField>
+
+### Behavior
+
+1. **Validation**: Checks that team has `stripeCustomerId` and `stripeProductId`
+   - If missing, redirects to `/pricing`
+2. **Configuration Check**: Looks for existing billing portal configurations
+3. **Configuration Creation** (if none exists):
+   - Verifies the product is active in Stripe
+   - Fetches all active prices for the product
+   - Creates a new portal configuration with:
+     - Subscription updates enabled (price, quantity, promotion codes)
+     - Subscription cancellation at period end
+     - Payment method updates enabled
+     - Cancellation reason collection
+4. **Session Creation**: Creates a portal session linked to the customer
+5. **Return**: Returns the session object (caller should redirect to `session.url`)
+
+### Portal Features Enabled
+
+<ParamField path="subscription_update" type="object">
+  Allows customers to update their subscription:
+  - **Enabled**: `true`
+  - **Allowed updates**: `['price', 'quantity', 'promotion_code']`
+  - **Proration behavior**: `'create_prorations'`
+  - Customers can upgrade/downgrade between available prices
+</ParamField>
+
+<ParamField path="subscription_cancel" type="object">
+  Allows customers to cancel their subscription:
+  - **Enabled**: `true`
+  - **Mode**: `'at_period_end'` (cancels at the end of billing period)
+  - **Cancellation reasons**: `['too_expensive', 'missing_features', 'switched_service', 'unused', 'other']`
+</ParamField>
+
+<ParamField path="payment_method_update" type="object">
+  Allows customers to update their payment method:
+  - **Enabled**: `true`
+</ParamField>
+
+### Usage Example
+
+```typescript
+import { createCustomerPortalSession } from '@/lib/payments/stripe';
+import { getTeamForUser } from '@/lib/db/queries';
+import { redirect } from 'next/navigation';
+
+export async function openCustomerPortal() {
+  'use server';
+  
+  const team = await getTeamForUser();
+  
+  if (!team) {
+    redirect('/sign-in');
+  }
+  
+  const session = await createCustomerPortalSession(team);
+  redirect(session.url);
+}
+```
+
+### Server Action Example
+
+```typescript
+// app/dashboard/billing/page.tsx
+import { createCustomerPortalSession } from '@/lib/payments/stripe';
+import { getTeamForUser } from '@/lib/db/queries';
+import { redirect } from 'next/navigation';
+
+export default function BillingPage() {
+  async function manageBilling() {
+    'use server';
+    
+    const team = await getTeamForUser();
+    
+    if (!team) {
+      redirect('/pricing');
+    }
+    
+    const portalSession = await createCustomerPortalSession(team);
+    redirect(portalSession.url);
+  }
+  
+  return (
+    <div>
+      <h1>Billing Settings</h1>
+      <form action={manageBilling}>
+        <button type="submit">
+          Manage Subscription
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+### API Route Example
+
+```typescript
+// app/api/billing/portal/route.ts
+import { createCustomerPortalSession } from '@/lib/payments/stripe';
+import { getTeamForUser } from '@/lib/db/queries';
+import { NextResponse } from 'next/server';
+
+export async function POST() {
+  try {
+    const team = await getTeamForUser();
+    
+    if (!team) {
+      return NextResponse.json(
+        { error: 'Team not found' },
+        { status: 404 }
+      );
+    }
+    
+    const session = await createCustomerPortalSession(team);
+    
+    return NextResponse.json({ url: session.url });
+  } catch (error) {
+    console.error('Error creating portal session:', error);
+    return NextResponse.json(
+      { error: 'Failed to create portal session' },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### Environment Variables Required
+
+- `STRIPE_SECRET_KEY`: Your Stripe secret API key
+- `BASE_URL`: Your application's base URL (used for the return URL)
+
+### Error Handling
+
+The function handles several error cases:
+
+1. **Missing Customer/Product**: Redirects to `/pricing` if `stripeCustomerId` or `stripeProductId` is null
+2. **Inactive Product**: Throws error if the team's product is not active in Stripe
+3. **No Active Prices**: Throws error if no active prices are found for the product
+4. **Stripe API Errors**: Will throw and should be caught by the caller
+
+### Error Examples
+
+```typescript
+try {
+  const session = await createCustomerPortalSession(team);
+  redirect(session.url);
+} catch (error) {
+  if (error instanceof Error) {
+    if (error.message.includes('not active')) {
+      // Handle inactive product
+      console.error('Product is not active in Stripe');
+    } else if (error.message.includes('No active prices')) {
+      // Handle missing prices
+      console.error('No pricing configured');
+    }
+  }
+  throw error;
+}
+```
+
+### Portal Configuration
+
+The portal configuration is created once and reused for all subsequent sessions. The configuration includes:
+
+- **Business Profile Headline**: "Manage your subscription"
+- **Return URL**: Returns customers to `/dashboard` after portal actions
+- **Proration**: Creates prorations when customers upgrade/downgrade
+- **Cancellation**: At period end, preventing immediate service disruption
+
+### Related Functions
+
+- `createCheckoutSession()` - Create new subscriptions
+- `handleSubscriptionChange()` - Process subscription updates from webhooks
+- `getStripeProducts()` - Fetch available products
