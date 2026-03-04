@@ -1,0 +1,114 @@
+{
+  "projectType": "saas",
+  "projectName": "Next.js SaaS Starter",
+  "projectDescription": "A Next.js starter template for building SaaS applications with authentication, Stripe payments, and team management.",
+  "theme": "mint",
+  "primaryColor": "#040404",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/authentication",
+              "features/teams",
+              "features/billing",
+              "features/activity-logs",
+              "features/middleware"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/database",
+              "configuration/stripe"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/overview",
+              "deployment/vercel",
+              "deployment/production"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api-reference/auth/session",
+              "api-reference/auth/password"
+            ]
+          },
+          {
+            "group": "Stripe",
+            "pages": [
+              "api-reference/stripe/checkout",
+              "api-reference/stripe/customer-portal",
+              "api-reference/stripe/webhooks"
+            ]
+          },
+          {
+            "group": "Database",
+            "pages": [
+              "api-reference/database/schema",
+              "api-reference/database/queries"
+            ]
+          },
+          {
+            "group": "API Routes",
+            "pages": [
+              "api-reference/routes/team",
+              "api-reference/routes/user"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Email/password authentication with JWT stored in cookies",
+    "Stripe subscription management and billing integration",
+    "Multi-tenancy with teams and role-based access control",
+    "Team member invitations and management",
+    "Activity logging system for user events",
+    "Dashboard with CRUD operations",
+    "Landing page and pricing page templates",
+    "Database migrations with Drizzle ORM",
+    "Global and local middleware for route protection",
+    "shadcn/ui components with Tailwind CSS"
+  ],
+  "publicApiSurface": [
+    "/api/stripe/checkout",
+    "/api/stripe/webhook",
+    "/api/team",
+    "/api/user",
+    "signToken()",
+    "verifyToken()",
+    "getSession()",
+    "setSession()",
+    "hashPassword()",
+    "comparePasswords()",
+    "createCheckoutSession()",
+    "createCustomerPortalSession()",
+    "handleSubscriptionChange()",
+    "getStripePrices()",
+    "getStripeProducts()"
+  ]
+}
